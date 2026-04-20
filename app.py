@@ -61,6 +61,21 @@ class JointMDN(nn.Module):
         return pi_logits, mu, L
 
 
+def infer_k_from_state_dict(state_dict: dict, M: int = 5) -> int:
+    num_cholesky_params = M * (M + 1) // 2
+    params_per_component = 1 + M + num_cholesky_params
+    output_bias = state_dict["network.4.bias"]
+    output_dim = int(output_bias.shape[0])
+
+    if output_dim % params_per_component != 0:
+        raise ValueError(
+            "Unable to infer mixture components K from model weights. "
+            f"Output dim {output_dim} is not divisible by {params_per_component}."
+        )
+
+    return output_dim // params_per_component
+
+
 def predict_material_ranges(model, X_new_tensor, num_samples=1000):
     model.eval()
     with torch.no_grad():
@@ -107,15 +122,16 @@ def load_artifacts():
 
     preprocessor = joblib.load(preprocessor_path)
     state_dict = torch.load(weights_path, map_location="cpu")
+    inferred_k = infer_k_from_state_dict(state_dict, M=5)
 
     # Start with the requested raw-feature count. If the saved model was trained on
     # one-hot encoded inputs, fall back to the fitted preprocessor output dimension.
-    model = JointMDN(input_dim=5, M=5, K=3)
+    model = JointMDN(input_dim=5, M=5, K=inferred_k)
     try:
         model.load_state_dict(state_dict)
     except RuntimeError:
         input_dim = len(preprocessor.get_feature_names_out())
-        model = JointMDN(input_dim=input_dim, M=5, K=3)
+        model = JointMDN(input_dim=input_dim, M=5, K=inferred_k)
         model.load_state_dict(state_dict)
 
     model.eval()

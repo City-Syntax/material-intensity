@@ -85,6 +85,8 @@ def prepare_dataloaders(
     file_path: str | Path = "Integrated_MI_database.xlsx",
     batch_size: int = 64,
     random_state: int = 42,
+    clip_upper_quantile: float | None = 0.99,
+    clip_materials: tuple[str, ...] = ("Steel", "Glass"),
 ):
     file_path = Path(file_path)
     if not file_path.is_absolute():
@@ -99,15 +101,43 @@ def prepare_dataloaders(
     df = df.dropna(subset=X_cols + y_cols).reset_index(drop=True)
 
     X = df[X_cols].copy()
-    y = np.log1p(df[y_cols].to_numpy(dtype=np.float32))
+    y_raw = df[y_cols].to_numpy(dtype=np.float32)
 
     # 70% train, 15% validation, 15% test
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=0.30, random_state=random_state
+    X_train, X_temp, y_train_raw, y_temp_raw = train_test_split(
+        X, y_raw, test_size=0.30, random_state=random_state
     )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.50, random_state=random_state
+    X_val, X_test, y_val_raw, y_test_raw = train_test_split(
+        X_temp, y_temp_raw, test_size=0.50, random_state=random_state
     )
+
+    clip_bounds = None
+    if clip_upper_quantile is not None:
+        if not (0.0 <= clip_upper_quantile <= 1.0):
+            raise ValueError("clip_upper_quantile must satisfy 0 <= q <= 1")
+
+        material_to_idx = {material: idx for idx, material in enumerate(y_cols)}
+        selected_materials = [
+            material for material in clip_materials if material in material_to_idx
+        ]
+
+        upper_bounds = {}
+        for material in selected_materials:
+            idx = material_to_idx[material]
+            upper_bound = np.quantile(y_train_raw[:, idx], clip_upper_quantile)
+            y_train_raw[:, idx] = np.minimum(y_train_raw[:, idx], upper_bound)
+            y_val_raw[:, idx] = np.minimum(y_val_raw[:, idx], upper_bound)
+            y_test_raw[:, idx] = np.minimum(y_test_raw[:, idx], upper_bound)
+            upper_bounds[material] = float(upper_bound)
+
+        clip_bounds = {
+            "upper_quantile": clip_upper_quantile,
+            "upper_bounds": upper_bounds,
+        }
+
+    y_train = np.log1p(y_train_raw)
+    y_val = np.log1p(y_val_raw)
+    y_test = np.log1p(y_test_raw)
 
     preprocessor = ColumnTransformer(
         transformers=[
@@ -151,6 +181,7 @@ def prepare_dataloaders(
         "val_loader": val_loader,
         "test_loader": test_loader,
         "preprocessor": preprocessor,
+        "clip_bounds": clip_bounds,
     }
 
 
