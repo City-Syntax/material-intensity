@@ -117,7 +117,7 @@ def load_artifacts():
     if not preprocessor_path.exists() or not weights_path.exists():
         raise FileNotFoundError(
             "Missing model artifacts. Please ensure `preprocessor.joblib` and "
-            "`mdn_model_weights.pth` are in the same folder as `app.py`."
+            "`mdn_model_weights.pth` are in the same folder as `Material_Intensity_Predictor.py`."
         )
 
     preprocessor = joblib.load(preprocessor_path)

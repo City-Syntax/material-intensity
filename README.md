@@ -107,7 +107,7 @@ pip install torch streamlit pandas scikit-learn joblib openpyxl
 ### Run the web app
 
 ```bash
-streamlit run app.py
+streamlit run Material_Intensity_Predictor.py
 ```
 
 ### Prepare data / retrain
