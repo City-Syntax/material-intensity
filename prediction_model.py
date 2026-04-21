@@ -1,3 +1,5 @@
+import os
+import random
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +16,7 @@ from torch.utils.data import DataLoader, TensorDataset
 SEED = 42
 MIN_OBSERVED_TARGETS = 2
 QUANTILES = [0.05, 0.50, 0.95]
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 X_cols = [
@@ -25,6 +28,33 @@ X_cols = [
 ]
 
 y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
+
+
+def set_global_seed(seed: int = SEED):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    try:
+        torch.use_deterministic_algorithms(True)
+    except Exception:
+        pass
+
+
+def reset_run_seed(seed: int = SEED):
+    """Reset all RNGs before each major run stage (tuning, training, evaluation)."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    set_global_seed(seed)
+
+
+reset_run_seed(SEED)
 
 
 def split_inputs(x_full: torch.Tensor, structure_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -211,7 +241,14 @@ def prepare_dataloaders(
     test_dataset = TensorDataset(X_test_tensor, y_test_tensor, y_test_mask_tensor)
 
     loader_kwargs = {"pin_memory": torch.cuda.is_available()}
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
+    train_generator = torch.Generator().manual_seed(random_state)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=train_generator,
+        **loader_kwargs,
+    )
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs)
 
@@ -239,6 +276,7 @@ def prepare_dataloaders(
 
 
 if __name__ == "__main__":
+    reset_run_seed(SEED)
     data = prepare_dataloaders()
     print("Data preparation complete.")
     print(f"X_train shape: {data['X_train'].shape}, y_train shape: {data['y_train'].shape}")
@@ -247,4 +285,12 @@ if __name__ == "__main__":
     print(
         f"Rows kept with >= {data['min_observed_targets']} observed targets: {data['kept_rows']}"
     )
-    print(f"Structure feature width: {data['structure_dim']}")
+    for split in ["train", "val", "test"]:
+        mask = data[f"y_{split}_mask"].cpu().numpy()
+        observed_counts = mask.sum(axis=1)
+        print(
+            f"{split.title()} observed targets per row - "
+            f"min: {observed_counts.min()}, "
+            f"mean: {observed_counts.mean():.2f}, "
+            f"max: {observed_counts.max()}"
+        )
