@@ -136,11 +136,6 @@ function displayModelInfo() {
 function setupEventListeners() {
     const form = document.getElementById('predictionForm');
     form.addEventListener('submit', handleFormSubmit);
-
-    const numSamplesInput = document.getElementById('numSamples');
-    numSamplesInput.addEventListener('input', function() {
-        document.getElementById('numSamplesValue').textContent = this.value;
-    });
 }
 
 // Handle form submission
@@ -152,7 +147,7 @@ async function handleFormSubmit(event) {
 
     // Validation
     if (!data.construction_period || !data.typology || !data.primary_code || 
-        !data.hybrid_structure || !data.country_norm) {
+        !data.hybrid_structure || !data.country) {
         showError('Please fill in all fields');
         return;
     }
@@ -199,7 +194,7 @@ function displayResults(result) {
         'typology': 'Building Function',
         'primary_code': 'Structural System',
         'hybrid_structure': 'Hybrid Structure',
-        'country_norm': 'Country'
+        'country': 'Country'
     };
 
     for (const [key, label] of Object.entries(inputLabels)) {

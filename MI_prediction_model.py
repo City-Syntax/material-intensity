@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 SEED = 42
 MIN_OBSERVED_TARGETS = 2
+QUANTILES = [0.05, 0.50, 0.95]
 
 
 X_cols = [
@@ -26,10 +27,27 @@ X_cols = [
 y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 
 
+def split_inputs(x_full: torch.Tensor, structure_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
+    if structure_dim <= 0 or structure_dim >= x_full.shape[1]:
+        raise ValueError(
+            f"Invalid structure_dim={structure_dim} for input width={x_full.shape[1]}"
+        )
+    x_all = x_full[:, :-structure_dim]
+    x_structure = x_full[:, -structure_dim:]
+    return x_all, x_structure
+
+
 class JointQuantileNet(nn.Module):
-    def __init__(self, input_dim: int, M: int = 5, hidden_dim: int = 256):
+    def __init__(
+        self,
+        input_dim: int,
+        structure_dim: int,
+        M: int = 5,
+        hidden_dim: int = 256,
+    ):
         super().__init__()
         self.M = M
+        self.structure_dim = structure_dim
 
         self.trunk = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -37,11 +55,12 @@ class JointQuantileNet(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.heads = nn.ModuleList([nn.Linear(hidden_dim, 3) for _ in range(M)])
+        self.heads = nn.ModuleList([nn.Linear(hidden_dim + structure_dim, 3) for _ in range(M)])
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = self.trunk(x)
-        raw = torch.stack([head(features) for head in self.heads], dim=1)
+    def forward(self, x_all: torch.Tensor, x_structure: torch.Tensor) -> torch.Tensor:
+        features = self.trunk(x_all)
+        h_concat = torch.cat([features, x_structure], dim=1)
+        raw = torch.stack([head(h_concat) for head in self.heads], dim=1)
 
         q50 = raw[:, :, 0]
         delta_low = F.softplus(raw[:, :, 1]) + 1e-4
@@ -58,7 +77,7 @@ def quantile_loss(
     y_true: torch.Tensor,
     y_mask: torch.Tensor,
 ) -> torch.Tensor:
-    q_levels = y_true.new_tensor([0.05, 0.50, 0.95])
+    q_levels = y_true.new_tensor(QUANTILES)
     errors = y_true.unsqueeze(-1) - y_pred
     pinball = torch.where(errors >= 0, q_levels * errors, (q_levels - 1) * errors)
     mask = y_mask.unsqueeze(-1).float()
@@ -109,9 +128,9 @@ def prepare_dataloaders(
     y_val_raw_df = y_val_raw_df.reset_index(drop=True)
     y_test_raw_df = y_test_raw_df.reset_index(drop=True)
 
-    y_train_raw = y_train_raw_df.to_numpy(dtype=np.float32)
-    y_val_raw = y_val_raw_df.to_numpy(dtype=np.float32)
-    y_test_raw = y_test_raw_df.to_numpy(dtype=np.float32)
+    y_train_raw = np.array(y_train_raw_df.to_numpy(dtype=np.float32), copy=True)
+    y_val_raw = np.array(y_val_raw_df.to_numpy(dtype=np.float32), copy=True)
+    y_test_raw = np.array(y_test_raw_df.to_numpy(dtype=np.float32), copy=True)
 
     clip_bounds = None
     if clip_upper_quantile is not None:
@@ -174,6 +193,8 @@ def prepare_dataloaders(
     X_val_processed = preprocessor.transform(X_val)
     X_test_processed = preprocessor.transform(X_test)
 
+    structure_dim = len(preprocessor.named_transformers_["cat"].categories_[2])
+
     X_train_tensor = torch.tensor(X_train_processed, dtype=torch.float32)
     X_val_tensor = torch.tensor(X_val_processed, dtype=torch.float32)
     X_test_tensor = torch.tensor(X_test_processed, dtype=torch.float32)
@@ -213,6 +234,7 @@ def prepare_dataloaders(
         "clip_bounds": clip_bounds,
         "kept_rows": len(df),
         "min_observed_targets": min_observed_targets,
+        "structure_dim": structure_dim,
     }
 
 
@@ -225,3 +247,4 @@ if __name__ == "__main__":
     print(
         f"Rows kept with >= {data['min_observed_targets']} observed targets: {data['kept_rows']}"
     )
+    print(f"Structure feature width: {data['structure_dim']}")

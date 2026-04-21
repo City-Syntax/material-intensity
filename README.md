@@ -39,24 +39,25 @@ Data integration includes schema alignment (feature names and units), category n
 
 ## Model
 
-The `JointQuantileNet` model is a shared-trunk neural network with one head per material. Each head predicts **p5, p50, and p95** in log-transformed space, and monotonic quantiles are enforced by parameterising the distance from the median with positive deltas.
+The `JointQuantileNet` model is a shared-trunk neural network with one head per material. Each head predicts **p5, p50, and p95** in log-transformed space, and monotonic quantiles are enforced by parameterizing the distance from the median with positive deltas.
 
-- **Architecture**: shared trunk with 2 hidden layers
-- **Hidden width**: tuned by Optuna
+Current architecture in the notebook and exported artifacts:
+
+- **Split-input design**: encoded feature vector is split into `x_all` and `x_structure`
+- **Trunk input**: `x_all`
+- **Per-material head input**: `[trunk(x_all), x_structure]`
 - **Output dimensions (M)**: 5 materials × 3 quantiles
 
 ## Hyperparameter Selection Method
 
-Hyperparameters are selected in `MI_prediction_model.ipynb` using Optuna:
+Hyperparameters are selected in `MI_prediction_model.ipynb` using Optuna.
 
-- **Sampler**: `TPESampler(seed=42)`
-- **Pruner**: `MedianPruner(n_startup_trials=5, n_warmup_steps=10)`
-- **Trials**: 30
-- **Objective**: minimize validation quantile loss (`quantile_loss`)
+- **Trials**: 20
+- **Objective**: minimize validation quantile loss
 - **Search space**:
-	- `hidden_dim`: categorical {128, 256, 512}
-	- `lr`: log-uniform float in [1e-4, 5e-3]
-	- `weight_decay`: log-uniform float in [1e-8, 1e-3]
+	- `hidden_dim`: categorical {128, 256, 384}
+	- `lr`: log-uniform float in [1e-4, 3e-3]
+	- `weight_decay`: log-uniform float in [1e-6, 1e-3]
 	- `batch_size`: categorical {32, 64, 128}
 
 After tuning, the model is retrained with the best hyperparameters and the best validation checkpoint is saved. Chosen hyperparameters are exported to `best_mdn_hparams.json`.
@@ -91,15 +92,15 @@ The notebook reports the following metrics per material:
 The notebook applies **split-conformal calibration** on top of quantile predictions using the validation split as calibration data.
 
 - Conformity score uses standard CQR: `s = max(q_lo - y, y - q_hi)`
+- Scores are computed in the original (physical) target space
 - Scores are allowed to be negative when the true value is safely inside the interval
-- The calibrated quantile `qhat` is **not clipped at 0**, so negative `qhat` values can shrink overly wide intervals
 
-At inference time, calibrated bounds are computed as:
+At inference time, the model first restores quantiles from log space using `expm1`, then applies `qhat` in physical units:
 
-- `p5_calibrated = p5 - qhat`
+- `p5_calibrated = max(p5 - qhat, 0)`
 - `p95_calibrated = p95 + qhat`
 
-This calibration is designed to improve interval reliability (coverage) and can either widen or narrow intervals depending on each material's calibration residuals.
+This calibration is designed to improve interval reliability (coverage) and can widen or shrink intervals depending on each material's calibration residuals.
 
 ## Input Features
 

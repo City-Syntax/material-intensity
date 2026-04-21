@@ -22,7 +22,7 @@ Current input fields are:
 - `typology`
 - `primary_code`
 - `hybrid_structure`
-- `country_norm`
+- `country`
 
 ## Running The Supported Interface
 
@@ -66,7 +66,7 @@ Example prediction request body:
   "typology": "R-MFH",
   "primary_code": "C",
   "hybrid_structure": "0",
-  "country_norm": "SGP"
+  "country": "SGP"
 }
 ```
 
@@ -74,6 +74,7 @@ Example prediction request body:
 
 - Ensure `preprocessor.joblib`, `mdn_model_weights.pth`, and `best_mdn_hparams.json` are present.
 - If you wire up your own backend, keep the field names aligned with `static/script.js`.
+- Current inference uses the split-input quantile architecture with `x_all` and `x_structure`.
 - If Streamlit port `8501` is already in use, run `streamlit run Material_Intensity_Predictor.py --server.port 8502`.
 
 **Version**: 1.0  
