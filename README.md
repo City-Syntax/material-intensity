@@ -80,6 +80,12 @@ After tuning, the model is retrained with the best hyperparameters and the best 
 
 The notebook fixes random seeds (Python/NumPy/PyTorch/Optuna) to make data splitting, hyperparameter search, training, and interval sampling reproducible.
 
+Current reproducibility setup includes:
+
+- Global seed reset before major stages (`reset_run_seed`)
+- Seeded Optuna sampler for deterministic trial suggestions
+- Seeded training DataLoader shuffling
+
 The data split is:
 
 - 70% training

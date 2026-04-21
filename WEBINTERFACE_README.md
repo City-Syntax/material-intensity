@@ -41,6 +41,10 @@ Ensure the following files are present in the directory:
 - `model_weights.pth`: Trained model weights
 - `best_hparams.json`: Model hyperparameters
 
+## Reproducibility Note
+
+The training/evaluation pipeline in `prediction_model.ipynb` and `prediction_model.py` uses fixed random seeding to reduce run-to-run variability.
+
 ## Troubleshooting
 
 - If Streamlit port `8501` is in use: `streamlit run material_intensity_predictor.py --server.port 8502`
