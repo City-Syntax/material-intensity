@@ -2,6 +2,12 @@ streamlit
 joblib
 numpy
 pandas
+pycountry
 torch
 scikit-learn
 openpyxl
+matplotlib
+flask
+flask-cors
+optuna
+
