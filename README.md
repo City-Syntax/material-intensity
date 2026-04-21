@@ -1,24 +1,52 @@
 # Material Intensity Predictor
 
-A web application for predicting **material intensities** (kg/m³) of buildings across five material categories: **Concrete, Glass, Steel, Wood, and Brick**.
+A machine learning tool for estimating **material intensities** (kg/m²) of buildings across five material categories: **Concrete, Glass, Steel, Wood, and Brick**.
 
-## About
+## Overview
 
-This is an interactive web-based predictor that estimates material intensity ranges for buildings based on input attributes such as construction period, typology, building code, structure type, and location.
+This project uses a **joint quantile network** implemented in PyTorch to predict material intensity percentiles directly from building attributes. The model outputs the **5th, 50th, and 95th percentiles** to capture likely ranges in material use.
 
-The predictor uses a machine learning model (PyTorch-based quantile network) trained on integrated material intensity data to provide:
-- **Median estimate** (p50)
-- **Lower bound** (p5)
-- **Upper bound** (p95)
+An interactive **Streamlit web app** (`material_intensity_predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
 
-## Usage
+## Repository Contents
 
-Run the web application locally:
-```bash
-streamlit run material_intensity_predictor.py
-```
+| File | Description |
+|------|-------------|
+| `material_intensity_predictor.py` | Streamlit web application for interactive prediction |
+| `prediction_model.py` | Data preprocessing and PyTorch DataLoader preparation |
+| `prediction_model.ipynb` | End-to-end notebook for tuning, training, evaluation, and export |
+| `model_weights.pth` | Trained model weights |
+| `best_hparams.json` | Exported training hyperparameters |
+| `preprocessor.joblib` | Fitted sklearn `ColumnTransformer` (scaler + one-hot encoder) |
+| `Integrated_MI_database.xlsx` | Integrated material intensity database used for training |
 
-Then access the app in your browser and enter building details to get instant predictions.
+## Integrated MI Database Sources
+
+The `Integrated_MI_database.xlsx` file is harmonized from five source databases. In this project, source labels are stored as `R-n`, `N-n`, `B-n`, `G-n`, and `C-n`, where `n` is the record index from each source.
+
+1. **R-n**: *Global construction materials database and stock analysis of residential buildings between 1970-2050*  
+	Link: https://doi.org/10.1016/j.jclepro.2019.119146
+2. **N-n**: *Spatiotemporal Characteristics of Global Building Material Intensity Revealed for Circular and Low-Carbon Construction*  
+	Link: https://doi.org/10.1021/acs.est.5c05684
+3. **B-n**: *A database seed for a community-driven material intensity research platform*  
+	Link: https://doi.org/10.1038/s41597-019-0021-x
+4. **G-n**: *Global Buildings Database Seed on Whole Life Carbon Emissions, Energy Performance, and Material Intensity (GBDB CarbEnMats)*  
+	Link: https://doi.org/10.21203/rs.3.rs-3373442/v1
+5. **C-n**: *CBMICD1.0: China's building material intensity coefficient dataset (1949-2015)*  
+	Related publication link: https://doi.org/10.1016/j.resconrec.2020.104824
+
+Data integration includes schema alignment (feature names and units), category normalization, and source-ID tracking to preserve provenance of each record.
+
+## Model
+
+The `JointQuantileNet` model is a shared-trunk neural network with one head per material. Each head predicts **p5, p50, and p95** in log-transformed space, and monotonic quantiles are enforced by parameterizing the distance from the median with positive deltas.
+
+Current architecture in the notebook and exported artifacts:
+
+- **Split-input design**: encoded feature vector is split into `x_all` and `x_structure`
+- **Trunk input**: `x_all`
+- **Per-material head input**: `[trunk(x_all), x_structure]`
+- **Output dimensions (M)**: 5 materials × 3 quantiles
 
 ## Hyperparameter Selection Method
 
