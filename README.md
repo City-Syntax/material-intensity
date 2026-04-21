@@ -41,6 +41,8 @@ Data integration includes schema alignment (feature names and units), category n
 
 Using the current preprocessing logic in `prediction_model.ipynb` (`MIN_OBSERVED_TARGETS = 2` and `random_state = 42`):
 
+- `MIN_OBSERVED_TARGETS = 2` means each row must have at least **2 non-missing material targets** (among Concrete, Glass, Steel, Wood, Brick) to be kept.
+
 - Raw integrated database rows: **2,590**
 - Rows in final filtered database (used for modeling pipeline): **2,490**
 - Training rows (70% split): **1,743**
