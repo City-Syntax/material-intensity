@@ -4,7 +4,7 @@ This repository includes a ready-to-run Streamlit app and optional browser UI as
 
 ## What Is In The Repo
 
-- `Material_Intensity_Predictor.py`: the supported Streamlit interface
+- `material_intensity_predictor.py`: the supported Streamlit interface
 - `templates/index.html`: a reusable HTML template for a browser UI
 - `static/style.css` and `static/script.js`: frontend assets that can be connected to a separate backend
 
@@ -30,7 +30,7 @@ Install dependencies and start Streamlit:
 
 ```bash
 pip install -r requirements.txt
-streamlit run Material_Intensity_Predictor.py
+streamlit run material_intensity_predictor.py
 ```
 
 ## Reusing The Frontend Assets
@@ -72,10 +72,10 @@ Example prediction request body:
 
 ## Troubleshooting
 
-- Ensure `preprocessor.joblib`, `mdn_model_weights.pth`, and `best_mdn_hparams.json` are present.
+- Ensure `preprocessor.joblib`, `model_weights.pth`, and `best_hparams.json` are present.
 - If you wire up your own backend, keep the field names aligned with `static/script.js`.
 - Current inference uses the split-input quantile architecture with `x_all` and `x_structure`.
-- If Streamlit port `8501` is already in use, run `streamlit run Material_Intensity_Predictor.py --server.port 8502`.
+- If Streamlit port `8501` is already in use, run `streamlit run material_intensity_predictor.py --server.port 8502`.
 
 **Version**: 1.0  
 **Last Updated**: April 2026

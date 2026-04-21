@@ -13,7 +13,7 @@ st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
 
 MATERIALS = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 QUANTILES = ("p5", "p50", "p95")
-MODEL_WEIGHTS_FILENAME = "mdn_model_weights.pth"
+MODEL_WEIGHTS_FILENAME = "model_weights.pth"
 ARTIFACT_DIR = Path(__file__).resolve().parent
 
 

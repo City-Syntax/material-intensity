@@ -6,17 +6,17 @@ A machine learning tool for estimating **material intensities** (kg/m²) of buil
 
 This project uses a **joint quantile network** implemented in PyTorch to predict material intensity percentiles directly from building attributes. The model outputs the **5th, 50th, and 95th percentiles** to capture likely ranges in material use.
 
-An interactive **Streamlit web app** (`Material_Intensity_Predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
+An interactive **Streamlit web app** (`material_intensity_predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
 
 ## Repository Contents
 
 | File | Description |
 |------|-------------|
-| `Material_Intensity_Predictor.py` | Streamlit web application for interactive prediction |
-| `MI_prediction_model.py` | Data preprocessing and PyTorch DataLoader preparation |
-| `MI_prediction_model.ipynb` | End-to-end notebook for tuning, training, evaluation, and export |
-| `mdn_model_weights.pth` | Trained model weights |
-| `best_mdn_hparams.json` | Exported training hyperparameters |
+| `material_intensity_predictor.py` | Streamlit web application for interactive prediction |
+| `prediction_model.py` | Data preprocessing and PyTorch DataLoader preparation |
+| `prediction_model.ipynb` | End-to-end notebook for tuning, training, evaluation, and export |
+| `model_weights.pth` | Trained model weights |
+| `best_hparams.json` | Exported training hyperparameters |
 | `preprocessor.joblib` | Fitted sklearn `ColumnTransformer` (scaler + one-hot encoder) |
 | `Integrated_MI_database.xlsx` | Integrated material intensity database used for training |
 
@@ -50,7 +50,7 @@ Current architecture in the notebook and exported artifacts:
 
 ## Hyperparameter Selection Method
 
-Hyperparameters are selected in `MI_prediction_model.ipynb` using Optuna.
+Hyperparameters are selected in `prediction_model.ipynb` using Optuna.
 
 - **Trials**: 20
 - **Objective**: minimize validation quantile loss
@@ -60,7 +60,7 @@ Hyperparameters are selected in `MI_prediction_model.ipynb` using Optuna.
 	- `weight_decay`: log-uniform float in [1e-6, 1e-3]
 	- `batch_size`: categorical {32, 64, 128}
 
-After tuning, the model is retrained with the best hyperparameters and the best validation checkpoint is saved. Chosen hyperparameters are exported to `best_mdn_hparams.json`.
+After tuning, the model is retrained with the best hyperparameters and the best validation checkpoint is saved. Chosen hyperparameters are exported to `best_hparams.json`.
 
 ## Reproducibility
 
@@ -123,15 +123,15 @@ pip install torch streamlit pandas scikit-learn joblib openpyxl
 ### Run the web app
 
 ```bash
-streamlit run Material_Intensity_Predictor.py
+streamlit run material_intensity_predictor.py
 ```
 
 ### Prepare data / retrain
 
-Open `MI_prediction_model.ipynb` or run:
+Open `prediction_model.ipynb` or run:
 
 ```bash
-python MI_prediction_model.py
+python prediction_model.py
 ```
 
 ## Requirements
