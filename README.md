@@ -37,6 +37,18 @@ The `Integrated_MI_database.xlsx` file is harmonized from five source databases.
 
 Data integration includes schema alignment (feature names and units), category normalization, and source-ID tracking to preserve provenance of each record.
 
+## Dataset Size and Training Usage
+
+Using the current preprocessing logic in `prediction_model.ipynb` (`MIN_OBSERVED_TARGETS = 2` and `random_state = 42`):
+
+- Raw integrated database rows: **2,590**
+- Rows in final filtered database (used for modeling pipeline): **2,490**
+- Training rows (70% split): **1,743**
+- Validation rows (15% split): **373**
+- Test rows (15% split): **374**
+
+So, **1,743 data points are directly used to train model weights**, and **2,490 data points are used in the overall model-development pipeline** (train + validation + test).
+
 ## Model
 
 The `JointQuantileNet` model is a shared-trunk neural network with one head per material. Each head predicts **p5, p50, and p95** in log-transformed space, and monotonic quantiles are enforced by parameterizing the distance from the median with positive deltas.
