@@ -116,8 +116,91 @@ def quantile_loss(
     return masked_sum / (n_observed + 1e-8)
 
 
+def _pinball(pred_q: torch.Tensor, target: torch.Tensor, q: float) -> torch.Tensor:
+    e = target - pred_q
+    return torch.maximum((q - 1) * e, q * e)
+
+
+def masked_multi_quantile_loss(
+    preds: torch.Tensor,
+    y: torch.Tensor,
+    mask: torch.Tensor,
+    quantiles: list[float] = QUANTILES,
+) -> torch.Tensor:
+    """Masked pinball loss averaged over materials and quantiles."""
+    B, M, Q = preds.shape
+    losses = []
+    valid_count = 0
+
+    for m in range(M):
+        m_mask = mask[:, m]
+        if m_mask.any():
+            y_m = y[m_mask, m]
+            pred_m = preds[m_mask, m, :]
+            lq = sum(
+                _pinball(pred_m[:, qi], y_m, q).mean()
+                for qi, q in enumerate(quantiles)
+            )
+            losses.append(lq / Q)
+            valid_count += 1
+
+    if valid_count == 0:
+        return torch.tensor(0.0, device=preds.device, requires_grad=True)
+
+    return torch.stack(losses).mean()
+
+
+def train_one_epoch(
+    model: JointQuantileNet,
+    loader: torch.utils.data.DataLoader,
+    optimizer: torch.optim.Optimizer,
+    structure_dim: int,
+) -> float:
+    model.train()
+    total = 0.0
+    n = 0
+    for X_batch, y_batch, m_batch in loader:
+        X_batch = X_batch.to(DEVICE, non_blocking=True)
+        y_batch = y_batch.to(DEVICE, non_blocking=True)
+        m_batch = m_batch.to(DEVICE, non_blocking=True)
+
+        x_all, x_structure = split_inputs(X_batch, structure_dim)
+        optimizer.zero_grad(set_to_none=True)
+        preds = model(x_all, x_structure)
+        loss = masked_multi_quantile_loss(preds, y_batch, m_batch)
+        loss.backward()
+        optimizer.step()
+
+        total += loss.item() * X_batch.size(0)
+        n += X_batch.size(0)
+    return total / max(n, 1)
+
+
+def evaluate_loss(
+    model: JointQuantileNet,
+    loader: torch.utils.data.DataLoader,
+    structure_dim: int,
+) -> float:
+    model.eval()
+    total = 0.0
+    n = 0
+    with torch.no_grad():
+        for X_batch, y_batch, m_batch in loader:
+            X_batch = X_batch.to(DEVICE, non_blocking=True)
+            y_batch = y_batch.to(DEVICE, non_blocking=True)
+            m_batch = m_batch.to(DEVICE, non_blocking=True)
+
+            x_all, x_structure = split_inputs(X_batch, structure_dim)
+            preds = model(x_all, x_structure)
+            loss = masked_multi_quantile_loss(preds, y_batch, m_batch)
+
+            total += loss.item() * X_batch.size(0)
+            n += X_batch.size(0)
+    return total / max(n, 1)
+
+
 def prepare_dataloaders(
-    file_path: str | Path = "Integrated_MI_database.xlsx",
+    file_path: str | Path = "Integrated_MI_database_add_Singapore.xlsx",
     batch_size: int = 64,
     random_state: int = SEED,
     clip_upper_quantile: float | None = 0.99,
@@ -273,6 +356,223 @@ def prepare_dataloaders(
         "min_observed_targets": min_observed_targets,
         "structure_dim": structure_dim,
     }
+
+
+def predict_material_ranges(
+    model: JointQuantileNet,
+    X_new_tensor: torch.Tensor,
+    structure_dim: int,
+    conformal_qhats: dict | None = None,
+) -> dict:
+    """
+    Predict p5/p50/p95 material intensities in physical units (kg/m²).
+
+    If conformal_qhats is provided, CQR correction is applied:
+        p5_calibrated  = max(p5  - qhat, 0)
+        p95_calibrated = p95 + qhat
+    """
+    model.eval()
+    with torch.no_grad():
+        X_new = X_new_tensor.to(DEVICE)
+        x_all, x_structure = split_inputs(X_new, structure_dim)
+        q_pred = model(x_all, x_structure).cpu().numpy()  # (N, M, 3) in log1p space
+
+    q5 = np.expm1(q_pred[:, :, 0])
+    q50 = np.expm1(q_pred[:, :, 1])
+    q95 = np.expm1(q_pred[:, :, 2])
+
+    if conformal_qhats is not None:
+        for m, material in enumerate(y_cols):
+            qhat = float(conformal_qhats.get(material, 0.0))
+            q5[:, m] = np.maximum(q5[:, m] - qhat, 0.0)
+            q95[:, m] = q95[:, m] + qhat
+
+    return {
+        material: {"p5": q5[:, m], "p50": q50[:, m], "p95": q95[:, m]}
+        for m, material in enumerate(y_cols)
+    }
+
+
+def fit_conformal_qhats(
+    model: JointQuantileNet,
+    X_calib_tensor: torch.Tensor,
+    y_calib_raw_df: pd.DataFrame,
+    alpha: float = 0.10,
+    structure_dim: int = 1,
+) -> dict:
+    """
+    Split-conformal calibration using CQR nonconformity scores on the validation set.
+
+    scores_i = max(q_lo(x_i) - y_i, y_i - q_hi(x_i)) in physical units.
+    Scores may be negative when y_i lies inside [q_lo, q_hi].
+    """
+    base_pred = predict_material_ranges(model, X_calib_tensor, structure_dim=structure_dim)
+    qhats = {}
+
+    for material in y_cols:
+        y_obs = y_calib_raw_df[material].to_numpy(dtype=float)
+        mask = ~np.isnan(y_obs)
+        if mask.sum() == 0:
+            qhats[material] = 0.0
+            continue
+
+        lo = base_pred[material]["p5"][mask]
+        hi = base_pred[material]["p95"][mask]
+        yv = y_obs[mask]
+
+        scores = np.maximum(lo - yv, yv - hi)
+        n = scores.shape[0]
+        q_level = min(1.0, np.ceil((n + 1) * (1 - alpha)) / n)
+        qhats[material] = float(np.quantile(scores, q_level, method="higher"))
+
+    return qhats
+
+
+def evaluate_conformal_coverage(
+    model: JointQuantileNet,
+    X_tensor: torch.Tensor,
+    y_raw_df: pd.DataFrame,
+    qhats: dict,
+    structure_dim: int,
+) -> pd.DataFrame:
+    """Return per-material coverage and mean interval width after conformal correction."""
+    pred = predict_material_ranges(
+        model, X_tensor, structure_dim=structure_dim, conformal_qhats=qhats
+    )
+    rows = []
+    for material in y_cols:
+        y_obs = y_raw_df[material].to_numpy(dtype=float)
+        mask = ~np.isnan(y_obs)
+        if mask.sum() == 0:
+            rows.append({"material": material, "coverage": np.nan,
+                         "mean_interval_width": np.nan, "n_obs": 0})
+            continue
+
+        lo = pred[material]["p5"][mask]
+        hi = pred[material]["p95"][mask]
+        yv = y_obs[mask]
+
+        rows.append({
+            "material": material,
+            "coverage": float(np.mean((yv >= lo) & (yv <= hi))),
+            "mean_interval_width": float(np.mean(hi - lo)),
+            "n_obs": int(mask.sum()),
+        })
+    return pd.DataFrame(rows)
+
+
+def evaluate_mdn_intervals(
+    model: JointQuantileNet,
+    data: dict,
+    conformal_qhats: dict | None = None,
+    split: str = "test",
+    structure_dim: int = 1,
+) -> pd.DataFrame:
+    """Return per-material coverage, mean interval width, and MAE."""
+    X = data[f"X_{split}"]
+    y_true_df = data[f"y_{split}_raw_df"]
+    pred = predict_material_ranges(
+        model, X, structure_dim=structure_dim, conformal_qhats=conformal_qhats
+    )
+    rows = []
+    for material in y_cols:
+        y_true = y_true_df[material].to_numpy(dtype=float)
+        mask = ~np.isnan(y_true)
+        if mask.sum() == 0:
+            continue
+        lo = pred[material]["p5"][mask]
+        hi = pred[material]["p95"][mask]
+        med = pred[material]["p50"][mask]
+        yt = y_true[mask]
+        rows.append({
+            "material": material,
+            "coverage": float(np.mean((yt >= lo) & (yt <= hi))),
+            "mean_width": float(np.mean(hi - lo)),
+            "mae": float(np.mean(np.abs(med - yt))),
+        })
+    return pd.DataFrame(rows)
+
+
+def _gaussian_kl(
+    mu_p: np.ndarray,
+    cov_p: np.ndarray,
+    mu_q: np.ndarray,
+    cov_q: np.ndarray,
+    eps: float = 1e-6,
+) -> float:
+    d = mu_p.shape[0]
+    cov_p_reg = cov_p + np.eye(d) * eps
+    cov_q_reg = cov_q + np.eye(d) * eps
+
+    sign_p, logdet_p = np.linalg.slogdet(cov_p_reg)
+    sign_q, logdet_q = np.linalg.slogdet(cov_q_reg)
+    if sign_p <= 0 or sign_q <= 0:
+        return float("nan")
+
+    inv_q = np.linalg.inv(cov_q_reg)
+    mean_term = float((mu_q - mu_p).T @ inv_q @ (mu_q - mu_p))
+    trace_term = float(np.trace(inv_q @ cov_p_reg))
+    return 0.5 * (trace_term + mean_term - d + (logdet_q - logdet_p))
+
+
+def evaluate_joint_distribution(
+    model: JointQuantileNet,
+    data: dict,
+    split: str = "test",
+    structure_dim: int = 1,
+    min_complete_rows: int = 30,
+) -> tuple[dict, pd.DataFrame, np.ndarray, np.ndarray]:
+    """
+    Evaluate joint distribution alignment between true and predicted medians.
+
+    Returns (summary_dict, per_material_df, corr_true, corr_pred).
+    """
+    y_df = data[f"y_{split}_raw_df"][y_cols].copy()
+    complete_mask = y_df.notna().all(axis=1).to_numpy()
+    n_complete = int(complete_mask.sum())
+
+    if n_complete < min_complete_rows:
+        raise ValueError(
+            f"Not enough complete rows for joint evaluation: {n_complete} < {min_complete_rows}"
+        )
+
+    pred_ranges_full = predict_material_ranges(
+        model, data[f"X_{split}"], structure_dim=structure_dim, conformal_qhats=None
+    )
+    pred_med_full = np.column_stack([pred_ranges_full[m]["p50"] for m in y_cols])
+    y_true_full = y_df.to_numpy(dtype=float)
+
+    y_true = y_true_full[complete_mask]
+    y_pred = pred_med_full[complete_mask]
+
+    mu_true = y_true.mean(axis=0)
+    mu_pred = y_pred.mean(axis=0)
+    std_true = y_true.std(axis=0, ddof=1)
+    std_pred = y_pred.std(axis=0, ddof=1)
+    cov_true = np.cov(y_true, rowvar=False)
+    cov_pred = np.cov(y_pred, rowvar=False)
+    corr_true = np.corrcoef(y_true, rowvar=False)
+    corr_pred = np.corrcoef(y_pred, rowvar=False)
+
+    summary = {
+        "split": split,
+        "n_complete_rows": n_complete,
+        "mean_vector_mae": float(np.mean(np.abs(mu_true - mu_pred))),
+        "cov_fro_norm": float(np.linalg.norm(cov_true - cov_pred, ord="fro")),
+        "corr_fro_norm": float(np.linalg.norm(corr_true - corr_pred, ord="fro")),
+        "kl_true_to_pred": _gaussian_kl(mu_true, cov_true, mu_pred, cov_pred),
+        "kl_pred_to_true": _gaussian_kl(mu_pred, cov_pred, mu_true, cov_true),
+    }
+    per_material = pd.DataFrame({
+        "material": y_cols,
+        "true_mean": mu_true,
+        "pred_mean": mu_pred,
+        "abs_mean_diff": np.abs(mu_true - mu_pred),
+        "true_std": std_true,
+        "pred_std": std_pred,
+        "abs_std_diff": np.abs(std_true - std_pred),
+    })
+    return summary, per_material, corr_true, corr_pred
 
 
 if __name__ == "__main__":

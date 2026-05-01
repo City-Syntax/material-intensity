@@ -18,7 +18,7 @@ An interactive **Streamlit web app** (`material_intensity_predictor.py`) lets us
 | `model_weights.pth` | Trained model weights |
 | `best_hparams.json` | Exported training hyperparameters |
 | `preprocessor.joblib` | Fitted sklearn `ColumnTransformer` (scaler + one-hot encoder) |
-| `Integrated_MI_database.xlsx` | Integrated material intensity database used for training |
+| `Integrated_MI_database_add_Singapore.xlsx` | Integrated material intensity database (with Singapore records) used for training |
 
 ## Integrated MI Database Sources
 
