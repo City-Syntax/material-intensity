@@ -14,6 +14,7 @@ st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
 MATERIALS = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 QUANTILES = ("p5", "p50", "p95")
 MODEL_WEIGHTS_FILENAME = "model_weights.pth"
+TARGET_TRANSFORMERS_FILENAME = "target_transformers.joblib"
 ARTIFACT_DIR = Path(__file__).resolve().parent
 
 
@@ -28,6 +29,7 @@ class JointQuantileNet(nn.Module):
         super().__init__()
         self.M = M
         self.structure_dim = structure_dim
+        self.hidden_dim = hidden_dim
 
         self.trunk = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -35,12 +37,35 @@ class JointQuantileNet(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
-        self.heads = nn.ModuleList([nn.Linear(hidden_dim + structure_dim, 3) for _ in range(M)])
+
+        self.base_feature = nn.Linear(hidden_dim + structure_dim, hidden_dim)
+        self.material_embeddings = nn.Parameter(torch.randn(M, hidden_dim) * 0.02)
+
+        self.msg_query = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.msg_key = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.msg_value = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.msg_gate = nn.Linear(hidden_dim * 2, hidden_dim)
+
+        self.heads = nn.ModuleList([nn.Linear(hidden_dim, 3) for _ in range(M)])
 
     def forward(self, x_all: torch.Tensor, x_structure: torch.Tensor) -> torch.Tensor:
-        features = self.trunk(x_all)
-        h_concat = torch.cat([features, x_structure], dim=1)
-        raw = torch.stack([head(h_concat) for head in self.heads], dim=1)
+        h = self.trunk(x_all)
+        h_concat = torch.cat([h, x_structure], dim=1)
+
+        base = self.base_feature(h_concat)
+        z0 = base.unsqueeze(1) + self.material_embeddings.unsqueeze(0)
+
+        q = self.msg_query(z0)
+        k = self.msg_key(z0)
+        v = self.msg_value(z0)
+        attn_logits = torch.matmul(q, k.transpose(-1, -2)) / np.sqrt(self.hidden_dim)
+        attn_weights = torch.softmax(attn_logits, dim=-1)
+        msg = torch.matmul(attn_weights, v)
+
+        gate = torch.sigmoid(self.msg_gate(torch.cat([z0, msg], dim=-1)))
+        z = gate * msg + (1.0 - gate) * z0
+
+        raw = torch.stack([head(z[:, m, :]) for m, head in enumerate(self.heads)], dim=1)
 
         q50 = raw[:, :, 0]
         delta_low = F.softplus(raw[:, :, 1]) + 1e-4
@@ -56,7 +81,10 @@ def infer_hidden_dim_from_state_dict(state_dict: dict) -> int:
     return int(state_dict["trunk.0.weight"].shape[0])
 
 
-def split_inputs(x_full: torch.Tensor, structure_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
+def split_inputs(
+    x_full: torch.Tensor,
+    structure_dim: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
     if structure_dim <= 0 or structure_dim >= x_full.shape[1]:
         raise ValueError(
             f"Invalid structure_dim={structure_dim} for input width={x_full.shape[1]}"
@@ -66,13 +94,35 @@ def split_inputs(x_full: torch.Tensor, structure_dim: int) -> tuple[torch.Tensor
     return x_all, x_structure
 
 
-def predict_material_ranges(model, X_new_tensor, structure_dim: int):
+def inverse_transform_quantiles(quantiles_np: np.ndarray, target_transformers: dict | None):
+    if target_transformers is None:
+        return np.expm1(quantiles_np)
+
+    restored = np.empty_like(quantiles_np, dtype=np.float32)
+    for i, material in enumerate(MATERIALS):
+        transformer = target_transformers.get(material)
+        material_quantiles = quantiles_np[:, i, :]
+        if transformer is None:
+            restored[:, i, :] = material_quantiles.astype(np.float32)
+            continue
+
+        for q_idx in range(material_quantiles.shape[1]):
+            restored[:, i, q_idx] = transformer.inverse_transform(
+                material_quantiles[:, q_idx].reshape(-1, 1)
+            )[:, 0].astype(np.float32)
+
+    return restored
+
+
+def predict_material_ranges(model, X_new_tensor, structure_dim: int, target_transformers=None):
     model.eval()
     with torch.no_grad():
         x_all, x_structure = split_inputs(X_new_tensor, structure_dim)
         quantiles = model(x_all, x_structure)
 
-    quantiles_np = np.expm1(quantiles.cpu().numpy())
+    quantiles_np = inverse_transform_quantiles(
+        quantiles.cpu().numpy(), target_transformers=target_transformers
+    )
 
     result = {}
     for i, material in enumerate(MATERIALS):
@@ -88,13 +138,17 @@ def predict_material_ranges(model, X_new_tensor, structure_dim: int):
 def load_artifacts():
     preprocessor_path = ARTIFACT_DIR / "preprocessor.joblib"
     weights_path = ARTIFACT_DIR / MODEL_WEIGHTS_FILENAME
+    target_transformers_path = ARTIFACT_DIR / TARGET_TRANSFORMERS_FILENAME
 
     preprocessor = joblib.load(preprocessor_path)
     state_dict = torch.load(weights_path, map_location="cpu")
+    target_transformers = (
+        joblib.load(target_transformers_path) if target_transformers_path.exists() else None
+    )
     hidden_dim = infer_hidden_dim_from_state_dict(state_dict)
 
     checkpoint_input_dim = int(state_dict["trunk.0.weight"].shape[1])
-    structure_dim = int(len(preprocessor.named_transformers_["cat"].categories_[2]))
+    structure_dim = len(preprocessor.named_transformers_["cat"].categories_[2])
     try:
         preprocessor_input_dim = int(len(preprocessor.get_feature_names_out()))
     except Exception:
@@ -117,7 +171,7 @@ def load_artifacts():
     model.load_state_dict(state_dict)
     model.eval()
 
-    return preprocessor, model, structure_dim
+    return preprocessor, model, structure_dim, target_transformers
 
 
 # =========================
@@ -165,10 +219,16 @@ st.write(
 )
 
 try:
-    preprocessor, model, structure_dim = load_artifacts()
+    preprocessor, model, structure_dim, target_transformers = load_artifacts()
 except Exception as exc:
     st.error(f"Error loading model: {exc}")
     st.stop()
+
+if target_transformers is None:
+    st.warning(
+        "Using legacy log-space artifacts. Retrain and export target_transformers.joblib "
+        "to enable the normal-space QuantileTransformer target pipeline."
+    )
 
 
 with st.sidebar:
@@ -222,7 +282,12 @@ if st.button("Predict Material Intensity", type="primary"):
     X_processed = preprocessor.transform(input_df)
     X_tensor = torch.tensor(X_processed, dtype=torch.float32)
 
-    predictions = predict_material_ranges(model, X_tensor, structure_dim=structure_dim)
+    predictions = predict_material_ranges(
+        model,
+        X_tensor,
+        structure_dim=structure_dim,
+        target_transformers=target_transformers,
+    )
 
     st.subheader("Predicted Material Intensities (kg/m²)")
 
@@ -236,7 +301,7 @@ if st.button("Predict Material Intensity", type="primary"):
             st.metric("95th percentile", f"{predictions[material]['p95']:.2f}")
 
     st.info(
-        "The 5th–95th percentile range summarizes the model's predicted uncertainty for each material."
+        "The 5th-95th percentile range summarizes the model's predicted uncertainty for each material."
     )
 
 else:

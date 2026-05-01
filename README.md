@@ -6,18 +6,19 @@ A machine learning tool for estimating **material intensities** (kg/m²) of buil
 
 This project uses a **joint quantile network** implemented in PyTorch to predict material intensity percentiles directly from building attributes. The model outputs the **5th, 50th, and 95th percentiles** to capture likely ranges in material use.
 
-An interactive **Streamlit web app** (`material_intensity_predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
+An interactive **Streamlit web app** (`Material_Intensity_Predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
 
 ## Repository Contents
 
 | File | Description |
 |------|-------------|
-| `material_intensity_predictor.py` | Streamlit web application for interactive prediction |
+| `Material_Intensity_Predictor.py` | Streamlit web application for interactive prediction |
 | `prediction_model.py` | Data preprocessing and PyTorch DataLoader preparation |
 | `prediction_model.ipynb` | End-to-end notebook for tuning, training, evaluation, and export |
 | `model_weights.pth` | Trained model weights |
 | `best_hparams.json` | Exported training hyperparameters |
 | `preprocessor.joblib` | Fitted sklearn `ColumnTransformer` (scaler + one-hot encoder) |
+| `target_transformers.joblib` | Fitted per-material sklearn `QuantileTransformer` objects for target normalization |
 | `Integrated_MI_database_add_Singapore.xlsx` | Integrated material intensity database (with Singapore records) used for training |
 
 ## Integrated MI Database Sources
@@ -53,14 +54,17 @@ So, **1,743 data points are directly used to train model weights**, and **2,490 
 
 ## Model
 
-The `JointQuantileNet` model is a shared-trunk neural network with one head per material. Each head predicts **p5, p50, and p95** in log-transformed space, and monotonic quantiles are enforced by parameterizing the distance from the median with positive deltas.
+The `JointQuantileNet` model is a shared-trunk neural network with one head per material and a lightweight material interaction block before the heads. Each head predicts **p5, p50, and p95** in target-transformed space, and monotonic quantiles are enforced by parameterizing the distance from the median with positive deltas.
 
 Current architecture in the notebook and exported artifacts:
 
 - **Split-input design**: encoded feature vector is split into `x_all` and `x_structure`
 - **Trunk input**: `x_all`
-- **Per-material head input**: `[trunk(x_all), x_structure]`
+- **Material interaction**: single-step message passing across material latent states before heads
+- **Per-material head input**: interaction-enhanced material latent representation
 - **Output dimensions (M)**: 5 materials × 3 quantiles
+
+Because this architecture changed from the earlier fully independent heads, existing `model_weights.pth` generated with the old architecture is not compatible and must be regenerated from `prediction_model.ipynb`.
 
 ## Hyperparameter Selection Method
 
@@ -94,8 +98,8 @@ The data split is:
 
 Target preprocessing used for training:
 
-- `log1p` transform for all target materials
-- optional upper-tail clipping (default `q=0.99`) for selected materials based on training-set quantiles
+- per-material `QuantileTransformer(output_distribution="normal")` fit on observed training targets
+- optional upper-tail clipping (default `q=0.99`) for selected materials based on training-set quantiles before fitting the transformer
 
 ## Evaluation Metrics
 
@@ -115,7 +119,7 @@ The notebook applies **split-conformal calibration** on top of quantile predicti
 - Scores are computed in the original (physical) target space
 - Scores are allowed to be negative when the true value is safely inside the interval
 
-At inference time, the model first restores quantiles from log space using `expm1`, then applies `qhat` in physical units:
+At inference time, the model first restores quantiles from the fitted per-material target transformers, then applies `qhat` in physical units:
 
 - `p5_calibrated = max(p5 - qhat, 0)`
 - `p95_calibrated = p95 + qhat`
@@ -144,6 +148,9 @@ pip install torch streamlit pandas scikit-learn joblib openpyxl
 
 ```bash
 streamlit run material_intensity_predictor.py
+
+# or (matching this repository filename casing)
+streamlit run Material_Intensity_Predictor.py
 ```
 
 ### Prepare data / retrain
