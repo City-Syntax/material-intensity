@@ -8,6 +8,14 @@ This project uses a **joint quantile network** implemented in PyTorch to predict
 
 An interactive **Streamlit web app** (`Material_Intensity_Predictor.py`) lets users input building parameters and instantly retrieve predicted material intensity ranges.
 
+## Latest Update (May 2026)
+
+- Synced notebook, training script, and web predictor to the same architecture and interfaces.
+- Confirmed quantile outputs are **p5 / p50 / p95** end to end.
+- Added lightweight material message passing before per-material heads in `JointQuantileNet`.
+- Standardized split-input API to use `structure_dim` across training, evaluation, conformal calibration, and web inference.
+- Exported artifacts (`model_weights.pth`, `preprocessor.joblib`, `target_transformers.joblib`, `best_hparams.json`) must come from this updated pipeline.
+
 ## Repository Contents
 
 | File | Description |
