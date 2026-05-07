@@ -1,0 +1,33 @@
+{
+  "model_type": "TwoStageConditionalModel",
+  "stage1": "LogisticRegression (per-material)",
+  "stage2": "RidgeCV in log-space (per-material)",
+  "joint_layer": "MultivariateNormal with group-specific covariance",
+  "group_cols": [
+    "Primary Code"
+  ],
+  "y_cols": [
+    "Concrete",
+    "Glass",
+    "Steel",
+    "Wood",
+    "Brick"
+  ],
+  "X_cols": [
+    "Construction period",
+    "Typology",
+    "Primary Code",
+    "Hybrid Structure",
+    "Country"
+  ],
+  "ridge_alphas": [
+    0.9220503522040908
+  ],
+  "stage2_best_alphas": {
+    "Concrete": 0.9220503522040908,
+    "Glass": 0.9220503522040908,
+    "Steel": 0.9220503522040908,
+    "Wood": 0.9220503522040908,
+    "Brick": 0.9220503522040908
+  }
+}
