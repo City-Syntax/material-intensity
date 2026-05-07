@@ -1,6 +1,6 @@
 import numpy as np
 from scipy import stats
-from sklearn.linear_model import LogisticRegression, RidgeCV
+from xgboost import XGBClassifier, XGBRegressor
 
 SEED = 42
 LOG_EPS = 1e-6
@@ -19,31 +19,45 @@ def build_group_keys(df, group_cols=GROUP_COLS):
 
 
 class MaterialOccurrenceModel:
-    def __init__(self, C=1.0, max_iter=1000, random_state=SEED):
-        self.C = C
-        self.max_iter = max_iter
-        self.random_state = random_state
+    def __init__(
+        self,
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.0,
+        reg_lambda=1.0,
+        random_state=SEED,
+    ):
+        self.xgb_params = dict(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            random_state=random_state,
+            objective="binary:logistic",
+            verbosity=0,
+        )
         self.models_ = {}
         self.trivial_proba_ = {}
 
-    def fit(self, X, y_mask):
+    def fit(self, X, y_presence):
         self.models_ = {}
         self.trivial_proba_ = {}
         for m, material in enumerate(Y_COLS):
-            obs = y_mask[:, m]
+            obs = y_presence[:, m]
             p = float(obs.mean())
             if p == 0.0 or p == 1.0:
                 self.trivial_proba_[material] = p
                 self.models_[material] = None
                 continue
-            lr = LogisticRegression(
-                C=self.C,
-                max_iter=self.max_iter,
-                random_state=self.random_state,
-                solver="lbfgs",
-            )
-            lr.fit(X, obs.astype(int))
-            self.models_[material] = lr
+            clf = XGBClassifier(**self.xgb_params)
+            clf.fit(X, obs.astype(int))
+            self.models_[material] = clf
         return self
 
     def predict_proba(self, X):
@@ -59,22 +73,41 @@ class MaterialOccurrenceModel:
 
 
 class MaterialIntensityModel:
-    def __init__(self, alphas=(0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)):
-        self.alphas = alphas
+    def __init__(
+        self,
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.0,
+        reg_lambda=1.0,
+        random_state=SEED,
+    ):
+        self.xgb_params = dict(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            random_state=random_state,
+            objective="reg:squarederror",
+            verbosity=0,
+        )
         self.models_ = {}
 
-    def fit(self, X, y_raw, y_mask):
+    def fit(self, X, y_raw, y_presence):
         self.models_ = {}
         for m, material in enumerate(Y_COLS):
-            obs = y_mask[:, m]
+            obs = y_presence[:, m]
             if obs.sum() < 2:
                 self.models_[material] = None
                 continue
-            X_obs = X[obs]
-            y_log = np.log(y_raw[obs, m] + LOG_EPS)
-            ridge = RidgeCV(alphas=list(self.alphas), cv=5)
-            ridge.fit(X_obs, y_log)
-            self.models_[material] = ridge
+            reg = XGBRegressor(**self.xgb_params)
+            reg.fit(X[obs], np.log(y_raw[obs, m] + LOG_EPS))
+            self.models_[material] = reg
         return self
 
     def predict_log(self, X):
@@ -105,10 +138,13 @@ class JointDistributionModel:
         eye_m = np.eye(len(Y_COLS))
         return shrunk + eye_m * self.reg_eps
 
-    def fit(self, X_proc, X_raw, y_raw, y_mask, intensity_model):
-        complete = y_mask.all(axis=1)
+    def fit(self, X_proc, X_raw, y_raw, y_presence, intensity_model):
+        # Complete cases: all five materials are truly present (observed AND > 0).
+        # Using y_mask.all() would include observed-as-zero rows, whose log(0+eps)
+        # values contaminate the residual covariance with near-−∞ entries.
+        complete = y_presence.all(axis=1)
         if complete.sum() < len(Y_COLS):
-            raise ValueError(f"Need >= {len(Y_COLS)} complete rows; got {complete.sum()}.")
+            raise ValueError(f"Need >= {len(Y_COLS)} presence-complete rows; got {complete.sum()}.")
 
         mu_log = intensity_model.predict_log(X_proc)
         y_log = np.log(y_raw[complete] + LOG_EPS)
@@ -154,15 +190,30 @@ class TwoStageConditionalModel:
     def __init__(
         self,
         group_cols=GROUP_COLS,
-        logistic_C=1.0,
-        ridge_alphas=(0.01, 0.1, 1.0, 10.0, 100.0, 1000.0),
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.0,
+        reg_lambda=1.0,
         min_group_size=20,
         reg_eps=1e-4,
         cov_shrink=0.0,
         random_state=SEED,
     ):
-        self.stage1 = MaterialOccurrenceModel(C=logistic_C, random_state=random_state)
-        self.stage2 = MaterialIntensityModel(alphas=ridge_alphas)
+        xgb_kw = dict(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            random_state=random_state,
+        )
+        self.stage1 = MaterialOccurrenceModel(**xgb_kw)
+        self.stage2 = MaterialIntensityModel(**xgb_kw)
         self.joint = JointDistributionModel(
             group_cols=group_cols,
             min_group_size=min_group_size,
@@ -171,9 +222,11 @@ class TwoStageConditionalModel:
         )
 
     def fit(self, X_proc, X_raw, y_raw, y_mask):
-        self.stage1.fit(X_proc, y_mask)
-        self.stage2.fit(X_proc, y_raw, y_mask)
-        self.joint.fit(X_proc, X_raw, y_raw, y_mask, self.stage2)
+        # y_presence: reported AND positive — the true "material exists" signal
+        y_presence = y_mask & (y_raw > 0)
+        self.stage1.fit(X_proc, y_presence)
+        self.stage2.fit(X_proc, y_raw, y_presence)
+        self.joint.fit(X_proc, X_raw, y_raw, y_presence, self.stage2)
         return self
 
     def predict(self, X_proc, groups, alpha=0.10):

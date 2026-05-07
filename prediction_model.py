@@ -124,22 +124,38 @@ def prepare_data(
     }
 
 
-def compute_smape(pred_dict, y_df, eps=1e-8):
-    smapes = []
+def compute_naive_maes(y_train_raw, y_train_mask):
+    naive_maes = {}
+    for m, mat in enumerate(Y_COLS):
+        # Presence rows only: the conditional regressor is trained on y > 0,
+        # so the naive baseline must be computed on the same support.
+        obs = y_train_mask[:, m] & (y_train_raw[:, m] > 0)
+        if obs.sum() > 0:
+            vals = y_train_raw[obs, m]
+            naive_maes[mat] = float(np.mean(np.abs(vals - vals.mean())))
+    return naive_maes
+
+
+def compute_mase(pred_dict, y_df, naive_maes, eps=1e-8):
+    mases = []
     for mat in Y_COLS:
         y_true = y_df[mat].to_numpy(dtype=float)
-        obs = ~np.isnan(y_true)
+        # Evaluate Stage 2 only on presence rows (observed AND positive).
+        # Measuring conditional intensity predictions against y=0 rows penalises
+        # Stage 2 for a job that belongs to Stage 1 (presence classification).
+        obs = (~np.isnan(y_true)) & (y_true > 0)
         if np.any(obs):
             y_pred = pred_dict[mat]["p50"][obs]
-            denom = np.abs(y_true[obs]) + np.abs(y_pred) + eps
-            smape = np.mean(2.0 * np.abs(y_pred - y_true[obs]) / denom)
-            smapes.append(smape)
-    return float(np.mean(smapes)) if smapes else np.inf
+            mae = np.mean(np.abs(y_pred - y_true[obs]))
+            mases.append(mae / (naive_maes.get(mat, 1.0) + eps))
+    return float(np.mean(mases)) if mases else np.inf
 
 
 def fit_best_model(data, n_trials=0):
     x_train = data["X_train_proc"]
     x_val = data["X_val_proc"]
+
+    naive_maes = compute_naive_maes(data["y_train_raw"], data["y_train_mask"])
 
     if n_trials <= 0 or optuna is None:
         model = TwoStageConditionalModel(random_state=SEED)
@@ -148,8 +164,13 @@ def fit_best_model(data, n_trials=0):
 
     def objective(trial):
         model = TwoStageConditionalModel(
-            logistic_C=trial.suggest_float("stage1_C", 1e-3, 1e3, log=True),
-            ridge_alphas=(trial.suggest_float("stage2_alpha", 1e-3, 1e3, log=True),),
+            n_estimators=trial.suggest_int("n_estimators", 100, 600),
+            max_depth=trial.suggest_int("max_depth", 3, 7),
+            learning_rate=trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            subsample=trial.suggest_float("subsample", 0.6, 1.0),
+            colsample_bytree=trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            reg_alpha=trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
+            reg_lambda=trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
             cov_shrink=trial.suggest_float("cov_shrink", 0.0, 1.0),
             min_group_size=trial.suggest_int("min_group_size", 10, 40),
             reg_eps=trial.suggest_float("reg_eps", 1e-6, 1e-2, log=True),
@@ -157,15 +178,20 @@ def fit_best_model(data, n_trials=0):
         )
         model.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
         pred_val = model.predict(x_val, data["groups_val"], alpha=0.10)
-        return compute_smape(pred_val, data["y_val_df"])
+        return compute_mase(pred_val, data["y_val_df"], naive_maes)
 
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED))
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     best = study.best_params
 
     tuned = TwoStageConditionalModel(
-        logistic_C=best["stage1_C"],
-        ridge_alphas=(best["stage2_alpha"],),
+        n_estimators=best["n_estimators"],
+        max_depth=best["max_depth"],
+        learning_rate=best["learning_rate"],
+        subsample=best["subsample"],
+        colsample_bytree=best["colsample_bytree"],
+        reg_alpha=best["reg_alpha"],
+        reg_lambda=best["reg_lambda"],
         cov_shrink=best["cov_shrink"],
         min_group_size=best["min_group_size"],
         reg_eps=best["reg_eps"],
@@ -184,18 +210,14 @@ def export_artifacts(model, preprocessor, best_params=None, out_dir="."):
 
     model_info = {
         "model_type": "TwoStageConditionalModel",
-        "stage1": "LogisticRegression (per-material)",
-        "stage2": "RidgeCV in log-space (per-material)",
+        "stage1": "XGBClassifier per-material (binary:logistic)",
+        "stage2": "XGBRegressor per-material in log-space (reg:squarederror)",
         "joint_layer": "MultivariateNormal with group-specific covariance",
         "group_cols": list(GROUP_COLS),
         "y_cols": list(Y_COLS),
         "X_cols": list(X_COLS),
-        "ridge_alphas": list(model.stage2.alphas),
-        "stage2_best_alphas": {
-            mat: float(model.stage2.models_[mat].alpha_)
-            for mat in Y_COLS
-            if model.stage2.models_.get(mat) is not None
-        },
+        "stage1_xgb_params": model.stage1.xgb_params,
+        "stage2_xgb_params": model.stage2.xgb_params,
     }
     if best_params:
         model_info["best_params"] = best_params

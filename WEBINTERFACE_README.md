@@ -2,6 +2,11 @@
 
 This web app serves predictions from the current **TwoStageConditionalModel** pipeline.
 
+Model internals:
+- Stage 1: `XGBClassifier` per material (`p_presence`)
+- Stage 2: `XGBRegressor` per material in log-space (`p50`)
+- Joint layer: Gaussian intervals by Typology-specific covariance (`p5`, `p95`)
+
 ## Quick Start
 
 ```bash

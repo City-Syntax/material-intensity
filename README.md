@@ -2,8 +2,8 @@
 
 This repository uses a **TwoStageConditionalModel** pipeline to predict building material intensities (kg/m²):
 
-1. **Stage 1** — per-material logistic regression for presence probability.
-2. **Stage 2** — per-material ridge regression in log-space for median intensity.
+1. **Stage 1** — per-material XGBoost classifier for presence probability.
+2. **Stage 2** — per-material XGBoost regressor in log-space for median intensity.
 3. **Joint layer** — group-wise covariance model (grouped by **Typology**) for uncertainty intervals (p5/p50/p95).
 
 ## Current Artifacts
@@ -55,6 +55,8 @@ Using the current preprocessing logic in `prediction_model.ipynb` (`MIN_OBSERVED
 | Test (15%) | 386 |
 
 So 1,799 data points are directly used to train model weights, and 2,570 data points are used in the overall model-development pipeline (train + validation + test).
+
+Hyperparameter tuning in `prediction_model.py` uses Optuna and minimises **validation MASE** computed on presence rows only (`y > 0`).
 
 ## Run the Web App
 

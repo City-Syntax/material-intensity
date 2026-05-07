@@ -1,10 +1,10 @@
 {
   "model_type": "TwoStageConditionalModel",
-  "stage1": "LogisticRegression (per-material)",
-  "stage2": "RidgeCV in log-space (per-material)",
+  "stage1": "XGBClassifier per-material (binary:logistic)",
+  "stage2": "XGBRegressor per-material in log-space (reg:squarederror)",
   "joint_layer": "MultivariateNormal with group-specific covariance",
   "group_cols": [
-    "Primary Code"
+    "Typology"
   ],
   "y_cols": [
     "Concrete",
@@ -20,14 +20,28 @@
     "Hybrid Structure",
     "Country"
   ],
-  "ridge_alphas": [
-    0.9220503522040908
-  ],
-  "stage2_best_alphas": {
-    "Concrete": 0.9220503522040908,
-    "Glass": 0.9220503522040908,
-    "Steel": 0.9220503522040908,
-    "Wood": 0.9220503522040908,
-    "Brick": 0.9220503522040908
+  "stage1_xgb_params": {
+    "n_estimators": 437,
+    "max_depth": 5,
+    "learning_rate": 0.02024159254451826,
+    "subsample": 0.8547174056242629,
+    "colsample_bytree": 0.9211639560344537,
+    "reg_alpha": 0.00021163102600660157,
+    "reg_lambda": 1.0802363399035841e-08,
+    "random_state": 42,
+    "objective": "binary:logistic",
+    "verbosity": 0
+  },
+  "stage2_xgb_params": {
+    "n_estimators": 437,
+    "max_depth": 5,
+    "learning_rate": 0.02024159254451826,
+    "subsample": 0.8547174056242629,
+    "colsample_bytree": 0.9211639560344537,
+    "reg_alpha": 0.00021163102600660157,
+    "reg_lambda": 1.0802363399035841e-08,
+    "random_state": 42,
+    "objective": "reg:squarederror",
+    "verbosity": 0
   }
 }
