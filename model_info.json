@@ -1,8 +1,16 @@
 {
   "model_type": "TwoStageConditionalModel",
   "stage1": "XGBClassifier per-material (binary:logistic)",
-  "stage2": "XGBRegressor per-material in log-space (reg:squarederror)",
-  "joint_layer": "MultivariateNormal with group-specific covariance",
+  "stage2": "MoE: GaussianMixture regime labels + XGBClassifier gating + XGBRegressor experts (log-space)",
+  "stage2_n_components": 3,
+  "stage2_regime_counts": {
+    "Concrete": 3,
+    "Glass": 3,
+    "Steel": 3,
+    "Wood": 3,
+    "Brick": 3
+  },
+  "joint_layer": "MultivariateNormal with group-specific covariance (residual inspection only)",
   "group_cols": [
     "Typology"
   ],
@@ -21,25 +29,25 @@
     "Country"
   ],
   "stage1_xgb_params": {
-    "n_estimators": 437,
+    "n_estimators": 399,
     "max_depth": 5,
-    "learning_rate": 0.02024159254451826,
-    "subsample": 0.8547174056242629,
-    "colsample_bytree": 0.9211639560344537,
-    "reg_alpha": 0.00021163102600660157,
-    "reg_lambda": 1.0802363399035841e-08,
+    "learning_rate": 0.030043607123456318,
+    "subsample": 0.8510403897109361,
+    "colsample_bytree": 0.6208008415832331,
+    "reg_alpha": 3.1684211040592003e-06,
+    "reg_lambda": 1.3234394712132709e-06,
     "random_state": 42,
     "objective": "binary:logistic",
     "verbosity": 0
   },
   "stage2_xgb_params": {
-    "n_estimators": 437,
+    "n_estimators": 399,
     "max_depth": 5,
-    "learning_rate": 0.02024159254451826,
-    "subsample": 0.8547174056242629,
-    "colsample_bytree": 0.9211639560344537,
-    "reg_alpha": 0.00021163102600660157,
-    "reg_lambda": 1.0802363399035841e-08,
+    "learning_rate": 0.030043607123456318,
+    "subsample": 0.8510403897109361,
+    "colsample_bytree": 0.6208008415832331,
+    "reg_alpha": 3.1684211040592003e-06,
+    "reg_lambda": 1.3234394712132709e-06,
     "random_state": 42,
     "objective": "reg:squarederror",
     "verbosity": 0

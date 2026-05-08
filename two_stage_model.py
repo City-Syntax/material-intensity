@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import stats
+from sklearn.mixture import GaussianMixture
 from xgboost import XGBClassifier, XGBRegressor
 
 SEED = 42
@@ -72,6 +73,100 @@ class MaterialOccurrenceModel:
         return proba
 
 
+class _PerMaterialMoE:
+    """Mixture-of-Experts intensity regressor for a single material (log-space).
+
+    Fits K latent regimes on log-transformed targets via GaussianMixture, trains
+    one XGBoost expert per regime plus a gating XGBClassifier.  Quantile
+    inference uses the law of total variance over the Gaussian mixture, which
+    produces wider intervals when the gating is uncertain (the key benefit for
+    multimodal materials like Concrete and Brick).
+    """
+
+    def __init__(self, n_components, xgb_params, random_state):
+        self.n_components = n_components
+        self.xgb_params = xgb_params
+        self.random_state = random_state
+
+    def fit(self, X, y_log):
+        n = len(y_log)
+        # Require at least 5 samples per component to avoid degenerate splits.
+        K = max(1, min(self.n_components, n // 5))
+
+        gm = GaussianMixture(
+            n_components=K, random_state=self.random_state, n_init=3, max_iter=300
+        )
+        gm.fit(y_log.reshape(-1, 1))
+        raw_labels = gm.predict(y_log.reshape(-1, 1))
+
+        # Compact labels to 0..K'-1 in case some GM components are empty.
+        unique, raw_labels = np.unique(raw_labels, return_inverse=True)
+        K = len(unique)
+        self.K_ = K
+
+        # Gating classifier: P(regime | X).
+        if K == 1:
+            self.gate_ = None
+        else:
+            gate_kw = {k: v for k, v in self.xgb_params.items() if k != "objective"}
+            self.gate_ = XGBClassifier(**gate_kw)
+            self.gate_.fit(X, raw_labels)
+
+        # One expert per regime + per-regime residual std.
+        self.experts_ = {}
+        self.expert_sigmas_ = np.zeros(K)
+        for k in range(K):
+            mask = raw_labels == k
+            if mask.sum() < 2:
+                mask = np.ones(n, dtype=bool)
+            reg = XGBRegressor(**self.xgb_params)
+            reg.fit(X[mask], y_log[mask])
+            self.experts_[k] = reg
+            resids = y_log[mask] - reg.predict(X[mask])
+            self.expert_sigmas_[k] = max(float(np.std(resids)), 1e-6)
+
+        return self
+
+    def _weights(self, X):
+        """Returns gate probabilities as (n_samples, K) array."""
+        n, K = X.shape[0], self.K_
+        if self.gate_ is None:
+            return np.ones((n, 1))
+        w = np.zeros((n, K))
+        proba = self.gate_.predict_proba(X)
+        for col, cls in enumerate(self.gate_.classes_):
+            w[:, int(cls)] = proba[:, col]
+        return w
+
+    def predict_log_mean(self, X):
+        """Mixture mean in log-space (used by JointDistributionModel)."""
+        w = self._weights(X)                                               # (n, K)
+        mu = np.stack([self.experts_[k].predict(X) for k in range(self.K_)], axis=1)
+        return (w * mu).sum(axis=1)                                        # (n,)
+
+    def predict_quantiles(self, X, q_lo=0.05, q_hi=0.95):
+        """Mixture quantiles via law of total variance + Gaussian approx.
+
+        Returns (p_lo, p50, p_hi) as numpy arrays in original (non-log) space.
+        Mixture variance = E[Var[Y|Z]] (within-regime) + Var[E[Y|Z]] (between-
+        regime), so uncertain gating automatically inflates the interval width.
+        """
+        K = self.K_
+        w = self._weights(X)                                               # (n, K)
+        mu = np.stack([self.experts_[k].predict(X) for k in range(K)], axis=1)
+        sigma_k = self.expert_sigmas_                                      # (K,)
+
+        mu_mix = (w * mu).sum(axis=1)                                      # (n,)
+        within_var = (w * sigma_k[np.newaxis, :] ** 2).sum(axis=1)
+        between_var = (w * (mu - mu_mix[:, np.newaxis]) ** 2).sum(axis=1)
+        sigma_mix = np.sqrt(np.maximum(within_var + between_var, 1e-12))   # (n,)
+
+        p_lo = np.maximum(np.exp(mu_mix + stats.norm.ppf(q_lo) * sigma_mix) - LOG_EPS, 0.0)
+        p50  = np.maximum(np.exp(mu_mix) - LOG_EPS, 0.0)
+        p_hi = np.maximum(np.exp(mu_mix + stats.norm.ppf(q_hi) * sigma_mix) - LOG_EPS, 0.0)
+        return p_lo, p50, p_hi
+
+
 class MaterialIntensityModel:
     def __init__(
         self,
@@ -83,6 +178,7 @@ class MaterialIntensityModel:
         reg_alpha=0.0,
         reg_lambda=1.0,
         random_state=SEED,
+        n_components=3,
     ):
         self.xgb_params = dict(
             n_estimators=n_estimators,
@@ -96,6 +192,8 @@ class MaterialIntensityModel:
             objective="reg:squarederror",
             verbosity=0,
         )
+        self.n_components = n_components
+        self.random_state = random_state
         self.models_ = {}
 
     def fit(self, X, y_raw, y_presence):
@@ -105,22 +203,46 @@ class MaterialIntensityModel:
             if obs.sum() < 2:
                 self.models_[material] = None
                 continue
-            reg = XGBRegressor(**self.xgb_params)
-            reg.fit(X[obs], np.log(y_raw[obs, m] + LOG_EPS))
-            self.models_[material] = reg
+            y_log = np.log(y_raw[obs, m] + LOG_EPS)
+            moe = _PerMaterialMoE(
+                n_components=self.n_components,
+                xgb_params=self.xgb_params,
+                random_state=self.random_state,
+            )
+            moe.fit(X[obs], y_log)
+            self.models_[material] = moe
         return self
 
     def predict_log(self, X):
+        """Mixture mean in log-space — backward-compatible with JointDistributionModel."""
         n_rows = X.shape[0]
         mu_log = np.zeros((n_rows, len(Y_COLS)), dtype=np.float64)
         for m, material in enumerate(Y_COLS):
-            model = self.models_.get(material)
-            if model is not None:
-                mu_log[:, m] = model.predict(X)
+            moe = self.models_.get(material)
+            if moe is not None:
+                mu_log[:, m] = moe.predict_log_mean(X)
         return mu_log
 
     def predict(self, X):
         return np.maximum(np.exp(self.predict_log(X)) - LOG_EPS, 0.0)
+
+    def predict_intervals(self, X, alpha=0.10):
+        """MoE quantile intervals.  Output: {material: {'p5', 'p50', 'p95'}}."""
+        q_lo, q_hi = alpha / 2.0, 1.0 - alpha / 2.0
+        result = {}
+        n = X.shape[0]
+        for material in Y_COLS:
+            moe = self.models_.get(material)
+            if moe is None:
+                result[material] = {
+                    "p5": np.zeros(n),
+                    "p50": np.zeros(n),
+                    "p95": np.zeros(n),
+                }
+            else:
+                p_lo, p50, p_hi = moe.predict_quantiles(X, q_lo=q_lo, q_hi=q_hi)
+                result[material] = {"p5": p_lo, "p50": p50, "p95": p_hi}
+        return result
 
 
 class JointDistributionModel:
@@ -201,6 +323,7 @@ class TwoStageConditionalModel:
         reg_eps=1e-4,
         cov_shrink=0.0,
         random_state=SEED,
+        n_components=3,
     ):
         xgb_kw = dict(
             n_estimators=n_estimators,
@@ -213,7 +336,7 @@ class TwoStageConditionalModel:
             random_state=random_state,
         )
         self.stage1 = MaterialOccurrenceModel(**xgb_kw)
-        self.stage2 = MaterialIntensityModel(**xgb_kw)
+        self.stage2 = MaterialIntensityModel(**xgb_kw, n_components=n_components)
         self.joint = JointDistributionModel(
             group_cols=group_cols,
             min_group_size=min_group_size,
@@ -231,7 +354,7 @@ class TwoStageConditionalModel:
 
     def predict(self, X_proc, groups, alpha=0.10):
         proba = self.stage1.predict_proba(X_proc)
-        intervals = self.joint.predict_intervals(X_proc, groups, self.stage2, alpha=alpha)
+        intervals = self.stage2.predict_intervals(X_proc, alpha=alpha)
         for m, mat in enumerate(Y_COLS):
             intervals[mat]["p_presence"] = proba[:, m]
         return intervals
