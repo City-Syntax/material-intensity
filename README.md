@@ -2,9 +2,13 @@
 
 This repository uses a **TwoStageConditionalModel** pipeline to predict building material intensities (kg/m²):
 
-1. **Stage 1** — per-material XGBoost classifier for presence probability.
-2. **Stage 2** — per-material XGBoost regressor in log-space for median intensity.
-3. **Joint layer** — group-wise covariance model (grouped by **Typology**) for uncertainty intervals (p5/p50/p95).
+1. **Stage 1** — per-material `XGBClassifier` for presence probability (`p_presence`).
+2. **Stage 2 — Mixture-of-Experts (MoE)** — per-material model combining:
+   - `GaussianMixture` on log-targets → K regime labels
+   - `XGBClassifier` gating → P(regime | X)
+   - K `XGBRegressor` experts → log-space predictions per regime
+   - Intervals via the **law of total variance** (Gaussian mixture quantiles) → `p5`, `p50`, `p95`
+3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on MoE log-residuals, grouped by **Typology**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
 
 ## Current Artifacts
 
@@ -20,7 +24,7 @@ Legacy artifacts from the previous PyTorch quantile model are obsolete and shoul
 - `Material_Intensity_Predictor.py` — Streamlit predictor app using `model.joblib`.
 - `prediction_model.ipynb` — end-to-end notebook (training, tuning, validation, export).
 - `prediction_model.py` — script version for training/exporting two-stage artifacts.
-- `two_stage_model.py` — importable module defining all model classes.
+- `two_stage_model.py` — importable module defining all model classes (`_PerMaterialMoE`, `MaterialOccurrenceModel`, `MaterialIntensityModel`, `JointDistributionModel`, `TwoStageConditionalModel`).
 - `build_notebook.py` — notebook build helper.
 
 ## Integrated MI Database Sources

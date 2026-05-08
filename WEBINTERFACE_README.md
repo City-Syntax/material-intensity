@@ -3,9 +3,9 @@
 This web app serves predictions from the current **TwoStageConditionalModel** pipeline.
 
 Model internals:
-- Stage 1: `XGBClassifier` per material (`p_presence`)
-- Stage 2: `XGBRegressor` per material in log-space (`p50`)
-- Joint layer: Gaussian intervals by Typology-specific covariance (`p5`, `p95`)
+- Stage 1: `XGBClassifier` per material → `p_presence`
+- Stage 2 (MoE): `GaussianMixture` regimes + `XGBClassifier` gating + K `XGBRegressor` experts → `p5`, `p50`, `p95` via law-of-total-variance Gaussian mixture quantiles
+- Joint layer: group-specific multivariate normal on MoE log-residuals (Typology groups) — used for residual inspection, not for `predict()` intervals
 
 ## Quick Start
 
@@ -28,7 +28,7 @@ Predictions include, for each material:
 - `p95` — 95th percentile (kg/m²)
 - `p_presence` — probability the material appears in the building
 
-The joint uncertainty layer groups buildings by **Typology** to estimate group-specific covariance matrices.
+Prediction intervals (`p5`, `p95`) are produced by the MoE Stage 2 using law-of-total-variance Gaussian mixture quantiles. The joint layer (Typology-grouped multivariate normal) is retained in the model object for residual inspection but does not drive app output.
 
 ## Input Fields
 
