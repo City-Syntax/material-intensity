@@ -211,8 +211,13 @@ def export_artifacts(model, preprocessor, best_params=None, out_dir="."):
     model_info = {
         "model_type": "TwoStageConditionalModel",
         "stage1": "XGBClassifier per-material (binary:logistic)",
-        "stage2": "XGBRegressor per-material in log-space (reg:squarederror)",
-        "joint_layer": "MultivariateNormal with group-specific covariance",
+        "stage2": "MoE: GaussianMixture regime labels + XGBClassifier gating + XGBRegressor experts (log-space)",
+        "stage2_n_components": model.stage2.n_components,
+        "stage2_regime_counts": {
+            mat: (model.stage2.models_[mat].K_ if model.stage2.models_.get(mat) is not None else 0)
+            for mat in Y_COLS
+        },
+        "joint_layer": "MultivariateNormal with group-specific covariance (residual inspection only)",
         "group_cols": list(GROUP_COLS),
         "y_cols": list(Y_COLS),
         "X_cols": list(X_COLS),

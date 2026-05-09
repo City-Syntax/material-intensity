@@ -8,7 +8,7 @@ This repository uses a **TwoStageConditionalModel** pipeline to predict building
    - `XGBClassifier` gating → P(regime | X)
    - K `XGBRegressor` experts → log-space predictions per regime
    - Intervals via the **law of total variance** (Gaussian mixture quantiles) → `p5`, `p50`, `p95`
-3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on MoE log-residuals, grouped by **Typology**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
+3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on MoE log-residuals, grouped by **Primary Code**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
 
 ## Current Artifacts
 

@@ -12,7 +12,7 @@
   },
   "joint_layer": "MultivariateNormal with group-specific covariance (residual inspection only)",
   "group_cols": [
-    "Typology"
+    "Primary Code"
   ],
   "y_cols": [
     "Concrete",
