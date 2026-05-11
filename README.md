@@ -2,13 +2,11 @@
 
 This repository uses a **TwoStageConditionalModel** pipeline to predict building material intensities (kg/m²):
 
-1. **Stage 1** — per-material `XGBClassifier` for presence probability (`p_presence`).
-2. **Stage 2 — Mixture-of-Experts (MoE)** — per-material model combining:
-   - `GaussianMixture` on log-targets → K regime labels
-   - `XGBClassifier` gating → P(regime | X)
-   - K `XGBRegressor` experts → log-space predictions per regime
-   - Intervals via the **law of total variance** (Gaussian mixture quantiles) → `p5`, `p50`, `p95`
-3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on MoE log-residuals, grouped by **Primary Code**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
+1. **Stage 1** — per-material classifier-chain `XGBClassifier`, wrapped with `CalibratedClassifierCV(method="sigmoid")` for `p_presence`.
+2. **Stage 2** — per-material `XGBRegressor(objective="reg:quantileerror")` in log-space at quantiles `[0.05, 0.50, 0.95]`.
+  - Directly predicts `p5`, `p50`, `p95` after inverse-log transform
+  - Supports arbitrary quantiles through Gaussian approximation inferred from `p05/p95` spread
+3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on log-residuals, grouped by **Primary Code**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
 
 ## Current Artifacts
 
@@ -24,7 +22,7 @@ Legacy artifacts from the previous PyTorch quantile model are obsolete and shoul
 - `Material_Intensity_Predictor.py` — Streamlit predictor app using `model.joblib`.
 - `prediction_model.ipynb` — end-to-end notebook (training, tuning, validation, export).
 - `prediction_model.py` — script version for training/exporting two-stage artifacts.
-- `two_stage_model.py` — importable module defining all model classes (`_PerMaterialMoE`, `MaterialOccurrenceModel`, `MaterialIntensityModel`, `JointDistributionModel`, `TwoStageConditionalModel`).
+- `two_stage_model.py` — importable module defining model classes and sampling logic (`MaterialOccurrenceModel`, per-material quantile regressors, `MaterialIntensityModel`, `JointDistributionModel`, `TwoStageConditionalModel`).
 - `build_notebook.py` — notebook build helper.
 
 ## Integrated MI Database Sources
@@ -61,6 +59,8 @@ Using the current preprocessing logic in `prediction_model.ipynb` (`MIN_OBSERVED
 So 1,799 data points are directly used to train model weights, and 2,570 data points are used in the overall model-development pipeline (train + validation + test).
 
 Hyperparameter tuning in `prediction_model.py` uses Optuna and minimises **validation MASE** computed on presence rows only (`y > 0`).
+
+Sampling (`sample_query`) uses the classifier-chain presence model plus post-hoc sampling calibration, structural priors by `Primary Code`, and a damped residual-covariance perturbation for realistic multi-material draws.
 
 ## Run the Web App
 

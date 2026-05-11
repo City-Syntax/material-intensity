@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import io
 import json
 import random
 from pathlib import Path
@@ -13,7 +15,7 @@ from two_stage_model import GROUP_COLS, Y_COLS, TwoStageConditionalModel, build_
 
 try:
     import optuna
-except Exception:
+except ImportError:
     optuna = None
 
 SEED = 42
@@ -159,7 +161,9 @@ def fit_best_model(data, n_trials=0):
 
     if n_trials <= 0 or optuna is None:
         model = TwoStageConditionalModel(random_state=SEED)
-        model.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            model.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
+        print("Model fitted  |  groups retained:", sorted(model.joint.group_covs_.keys()))
         return model, {}
 
     def objective(trial):
@@ -176,12 +180,19 @@ def fit_best_model(data, n_trials=0):
             reg_eps=trial.suggest_float("reg_eps", 1e-6, 1e-2, log=True),
             random_state=SEED,
         )
-        model.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            model.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
         pred_val = model.predict(x_val, data["groups_val"], alpha=0.10)
         return compute_mase(pred_val, data["y_val_df"], naive_maes)
 
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def _cb(study, trial):
+        if trial.number % 10 == 9 or trial.number == 0:
+            print(f"  trial {trial.number+1:3d}/{n_trials}  best MASE={study.best_value:.4f}")
+
     study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED))
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False, callbacks=[_cb])
     best = study.best_params
 
     tuned = TwoStageConditionalModel(
@@ -197,7 +208,9 @@ def fit_best_model(data, n_trials=0):
         reg_eps=best["reg_eps"],
         random_state=SEED,
     )
-    tuned.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
+    with contextlib.redirect_stdout(io.StringIO()):
+        tuned.fit(x_train, data["X_train_raw"], data["y_train_raw"], data["y_train_mask"])
+    print("Tuned model fitted  |  groups retained:", sorted(tuned.joint.group_covs_.keys()))
     return tuned, best
 
 
@@ -210,13 +223,8 @@ def export_artifacts(model, preprocessor, best_params=None, out_dir="."):
 
     model_info = {
         "model_type": "TwoStageConditionalModel",
-        "stage1": "XGBClassifier per-material (binary:logistic)",
-        "stage2": "MoE: GaussianMixture regime labels + XGBClassifier gating + XGBRegressor experts (log-space)",
-        "stage2_n_components": model.stage2.n_components,
-        "stage2_regime_counts": {
-            mat: (model.stage2.models_[mat].K_ if model.stage2.models_.get(mat) is not None else 0)
-            for mat in Y_COLS
-        },
+        "stage1": "XGBClassifier per-material (binary:logistic, Platt-calibrated via CalibratedClassifierCV)",
+        "stage2": "XGBRegressor per-material quantile regression (reg:quantileerror, quantiles=[0.05,0.50,0.95], log-space)",
         "joint_layer": "MultivariateNormal with group-specific covariance (residual inspection only)",
         "group_cols": list(GROUP_COLS),
         "y_cols": list(Y_COLS),

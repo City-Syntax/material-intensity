@@ -2,14 +2,31 @@ import numpy as np
 from scipy import stats
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.isotonic import IsotonicRegression
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.mixture import GaussianMixture
 from xgboost import XGBClassifier, XGBRegressor
 
 SEED = 42
 LOG_EPS = 1e-6
 Y_COLS = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 GROUP_COLS = ["Primary Code"]
+
+# Dominant structural material per Primary Code → minimum presence probability during sampling.
+# Applied after isotonic calibration, before the final probability clip.
+STRUCTURAL_PRIOR = {
+    "B": {"Brick":    0.7},
+    "C": {"Concrete": 0.7},
+    "S": {"Steel":    0.7},
+    "W": {"Wood":     0.7},
+    # "T" (Traditional): no single dominant material — omitted
+}
+
+# ── Sampling hyperparameters ────────────────────────────────────────────────
+BLEND_LAMBDA   = 0.35   # chain weight in blend:  p = λ·p_chain + (1-λ)·p_marginal
+DROPOUT_RATE   = 0.08   # diversity dropout: flip "present" → "absent" with this prob
+P_CLIP_LO      = 0.05   # presence probability hard lower clip (prevents probability 0)
+P_CLIP_HI      = 0.95   # presence probability hard upper clip (prevents probability 1)
+RESIDUAL_SCALE = 0.35   # Stage 3 log-space residual amplitude
+CROSS_DAMP     = 0.25   # Stage 3 off-diagonal covariance damping factor
+Z_QUANT_95     = 1.6449 # norm.ppf(0.95); recovers sigma from [p05, p95] spread
 
 
 def build_group_keys(df, group_cols=GROUP_COLS):
@@ -25,15 +42,10 @@ def build_group_keys(df, group_cols=GROUP_COLS):
 class MaterialOccurrenceModel:
     """Classifier chain for joint material presence modeling.
 
-    Trains one XGBClassifier per material in prevalence-descending order.
-    Each classifier conditions on all previously fitted materials, capturing
-    co-occurrence dependencies that independent Bernoulli sampling misses.
-
-    fit / predict_proba keep the same signatures as before.
-    calibrate()       fits per-material IsotonicRegression on a held-out set.
-    sample_presence() draws coherent joint combinations via ancestral sampling,
-                      applying calibration at each chain step if fitted.
-    evaluate_calibration() prints reliability diagnostics and returns plot data.
+    Trains one CalibratedClassifierCV(XGBClassifier, method='sigmoid') per
+    material in descending binary-entropy order.  Each classifier conditions on
+    all previously fitted materials, capturing co-occurrence dependencies that
+    independent Bernoulli sampling misses.
     """
 
     def __init__(
@@ -61,8 +73,8 @@ class MaterialOccurrenceModel:
         )
         self.models_ = {}
         self.trivial_proba_ = {}
-        self.calibrators_ = {}
         self.chain_order_ = list(range(len(Y_COLS)))
+        self.presence_calibrators_ = {}   # set by TwoStageConditionalModel.calibrate_sampling()
 
     @staticmethod
     def _chain_X(X, ctx_cols):
@@ -74,19 +86,18 @@ class MaterialOccurrenceModel:
     def fit(self, X, y_presence):
         """Fit classifier chain in descending binary-entropy order.
 
-        Each XGBClassifier is wrapped with CalibratedClassifierCV so that
-        predict_proba() outputs calibrated probabilities directly.
-        Isotonic regression is used when n_samples >= 100 (enough data for
-        monotone fit); Platt scaling (sigmoid) is used otherwise.
+        Each XGBClassifier is wrapped with CalibratedClassifierCV (Platt
+        scaling) so that predict_proba() outputs calibrated probabilities
+        directly.  Sigmoid is used for all materials: isotonic regression
+        overfits on sparse probability bins (bins with < 15 samples between
+        0.1 and 0.8), which inflates log-loss despite lower Brier score.
         """
         self.models_ = {}
         self.trivial_proba_ = {}
-        self.calibrators_ = {}   # reset: calibration is now baked into models_
         p = y_presence.mean(axis=0).clip(1e-9, 1 - 1e-9)
         entropy = -p * np.log(p) - (1 - p) * np.log(1 - p)
         self.chain_order_ = list(np.argsort(-entropy))
-        n = X.shape[0]
-        cal_method = "isotonic" if n >= 100 else "sigmoid"
+        cal_method = "sigmoid"
         ctx = []   # list of (N,) float arrays — observed labels so far
         for m in self.chain_order_:
             material = Y_COLS[m]
@@ -103,39 +114,8 @@ class MaterialOccurrenceModel:
             ctx.append(obs.astype(np.float64))
         return self
 
-    def calibrate(self, X_val, y_val_presence):
-        """Fit per-material isotonic calibrators on held-out presence labels.
-
-        For each material in chain order, computes the raw conditional
-        probability P(z_m=1 | X_val, true_prev_labels) then fits an
-        IsotonicRegression to map those raw probabilities to calibrated ones.
-        Calibrators are applied automatically by predict_proba and
-        sample_presence after this call.
-
-        Parameters
-        ----------
-        X_val          : np.ndarray (n_val, n_features) preprocessed features
-        y_val_presence : np.ndarray (n_val, n_materials) bool  true presence
-        """
-        self.calibrators_ = {}
-        ctx = []   # growing true-label context (n_val,) per material
-        for m in self.chain_order_:
-            material = Y_COLS[m]
-            obs = y_val_presence[:, m].astype(int)
-            if self.models_.get(material) is None:
-                self.calibrators_[material] = None
-            else:
-                p_raw = self.models_[material].predict_proba(
-                    self._chain_X(X_val, ctx)
-                )[:, 1]
-                cal = IsotonicRegression(out_of_bounds="clip")
-                cal.fit(p_raw, obs)
-                self.calibrators_[material] = cal
-            ctx.append(y_val_presence[:, m].astype(np.float64))
-        return self
-
     def predict_proba(self, X):
-        """Marginal probabilities via greedy chain with isotonic calibration."""
+        """Marginal probabilities via greedy chain (Platt-calibrated)."""
         n = X.shape[0]
         proba = np.zeros((n, len(Y_COLS)), dtype=np.float64)
         ctx = []   # list of (n,) float arrays — hard predictions so far
@@ -147,55 +127,148 @@ class MaterialOccurrenceModel:
                 p_m = self.models_[material].predict_proba(
                     self._chain_X(X, ctx)
                 )[:, 1]
-            cal = self.calibrators_.get(material)
-            if cal is not None:
-                p_m = cal.predict(p_m)
             proba[:, m] = p_m
             ctx.append((p_m > 0.5).astype(np.float64))
         return proba
 
-    def sample_presence(self, X, n_samples=1000, random_state=None):
-        """Draw coherent material combinations via ancestral chain sampling.
+    def _predict_proba_order(self, X, perm, train_pos):
+        """Greedy chain predict_proba with a given material sampling order.
 
-        Sequentially samples each material conditioned on previously sampled
-        materials.  Applies isotonic calibration at each chain step if
-        calibrate() has been called.
+        Uses "available context": for each material at position k in perm, builds
+        the training-order context columns, substituting zeros for any prior that
+        has not yet been visited in this permutation.  This preserves the expected
+        feature dimension of each chain model while allowing arbitrary ordering.
+        """
+        n         = X.shape[0]
+        proba     = np.zeros((n, len(Y_COLS)))
+        ctx_built = {}   # m (material index) -> (n,) hard-predicted float labels
+
+        for k in range(len(Y_COLS)):
+            m        = perm[k]
+            material = Y_COLS[m]
+            t        = train_pos[m]   # training chain position → expected ctx columns
+
+            ctx = [
+                ctx_built.get(self.chain_order_[j], np.zeros(n))
+                for j in range(t)
+            ]
+
+            if self.models_.get(material) is None:
+                p_m = np.full(n, self.trivial_proba_.get(material, 0.0))
+            else:
+                p_m = self.models_[material].predict_proba(
+                    self._chain_X(X, ctx)
+                )[:, 1]
+
+            proba[:, m]  = p_m
+            ctx_built[m] = (p_m > 0.5).astype(np.float64)
+
+        return proba
+
+    def sample_presence(self, X, n_samples=1000, temperature=1.0, random_state=None,
+                        n_chain_orders=4, primary_codes=None):
+        """Draw coherent material combinations via randomized ancestral chain sampling.
+
+        Reduces fixed-order dependency artifacts by:
+          • Averaging the blend-anchor marginal over n_chain_orders random orderings
+          • Dividing n_samples into n_chain_orders groups each sampled with its own
+            random chain order, using "available context" to preserve model dimensions
+          • Residual-chain blend:  p = λ·p_chain + (1-λ)·p_marginal_avg  (λ=0.35)
+          • Probability clip:      p = clip(p, 0.05, 0.95)
+          • Diversity dropout:     flip "present" → "absent" with prob 0.08
 
         Parameters
         ----------
-        X           : np.ndarray (n_rows, n_features) preprocessed features
-        n_samples   : int  draws per query row
-        random_state: int, Generator, or None
+        X              : np.ndarray (n_rows, n_features) preprocessed features
+        n_samples      : int  draws per query row
+        temperature    : float > 0  logit temperature applied to p_chain before blend
+        random_state   : int, Generator, or None
+        n_chain_orders : int  random orderings to average for the marginal anchor
+                         and to partition sample groups (default 4)
 
         Returns
         -------
         np.ndarray (n_rows, n_samples, n_materials) bool
         """
+        _eps = 1e-9
+
         rng    = np.random.default_rng(random_state)
         n_rows = X.shape[0]
         M      = len(Y_COLS)
         out    = np.zeros((n_rows, n_samples, M), dtype=bool)
 
-        for i in range(n_rows):
-            X_rep = np.tile(X[i:i+1], (n_samples, 1))   # (n_samples, n_feat)
-            ctx   = []                                    # (n_samples,) cols
-            pres  = np.zeros((n_samples, M), dtype=bool)
+        # Precompute training position of each material index for O(1) lookup
+        train_pos = {m: pos for pos, m in enumerate(self.chain_order_)}
 
-            for m in self.chain_order_:
-                material = Y_COLS[m]
-                if self.models_.get(material) is None:
-                    p_m = np.full(n_samples,
-                                  self.trivial_proba_.get(material, 0.0))
-                else:
-                    p_m = self.models_[material].predict_proba(
-                        self._chain_X(X_rep, ctx)
-                    )[:, 1]                               # (n_samples,)
-                cal = self.calibrators_.get(material)
-                if cal is not None:
-                    p_m = cal.predict(p_m)
-                z = rng.random(n_samples) < p_m
-                pres[:, m] = z
-                ctx.append(z.astype(np.float64))
+        for i in range(n_rows):
+            Xi = X[i:i+1]
+
+            # ── Order-averaged marginal (blend anchor) ─────────────────────────
+            # Average predict_proba over n_chain_orders orderings to remove the
+            # fixed-order suppression/amplification that biases the blend anchor.
+            p_avg = self.predict_proba(Xi)[0].copy()   # (M,) training order
+            for _ in range(n_chain_orders - 1):
+                perm  = rng.permutation(M)
+                p_avg += self._predict_proba_order(Xi, perm, train_pos)[0]
+            p_marginal = p_avg / n_chain_orders         # (M,) order-averaged
+
+            # ── Stochastic draws split into n_chain_orders groups ──────────────
+            # Each group uses its own random permutation so no single material is
+            # always first (and thus always unconditioned).
+            pres  = np.zeros((n_samples, M), dtype=bool)
+            edges = np.linspace(0, n_samples, n_chain_orders + 1, dtype=int)
+
+            for g in range(n_chain_orders):
+                start, end = int(edges[g]), int(edges[g + 1])
+                n_g   = end - start
+                X_rep = np.tile(Xi, (n_g, 1))
+                perm  = rng.permutation(M)        # random order for this group
+                pres_g    = np.zeros((n_g, M), dtype=bool)
+                ctx_built = {}                    # m -> (n_g,) sampled float labels
+
+                for k in range(M):
+                    m        = perm[k]
+                    material = Y_COLS[m]
+                    t        = train_pos[m]       # expected context columns
+
+                    # "Available context": training-order priors, zeros if not yet
+                    # sampled in this group's random order.
+                    ctx = [
+                        ctx_built.get(self.chain_order_[j], np.zeros(n_g))
+                        for j in range(t)
+                    ]
+
+                    if self.models_.get(material) is None:
+                        p_m = np.full(n_g, self.trivial_proba_.get(material, 0.0))
+                    else:
+                        p_chain = self.models_[material].predict_proba(
+                            self._chain_X(X_rep, ctx)
+                        )[:, 1]
+                        if temperature != 1.0:
+                            logit_p = np.log(p_chain.clip(_eps, 1 - _eps) /
+                                             (1 - p_chain.clip(_eps, 1 - _eps)))
+                            p_chain = 1.0 / (1.0 + np.exp(-logit_p / temperature))
+
+                        p_base = np.full(n_g, float(p_marginal[m]))
+                        p_m    = BLEND_LAMBDA * p_chain + (1.0 - BLEND_LAMBDA) * p_base
+
+                    if self.presence_calibrators_.get(material) is not None:
+                        p_m = self.presence_calibrators_[material].predict(p_m).clip(0.0, 1.0)
+
+                    # Structural prior floor: primary structural material cannot collapse
+                    if primary_codes is not None:
+                        floor = STRUCTURAL_PRIOR.get(primary_codes[i], {}).get(material, 0.0)
+                        if floor > 0.0:
+                            p_m = np.maximum(p_m, floor)
+
+                    p_m = np.clip(p_m, P_CLIP_LO, P_CLIP_HI)
+                    z   = rng.random(n_g) < p_m
+                    z   = z & (rng.random(n_g) >= DROPOUT_RATE)
+
+                    pres_g[:, m] = z
+                    ctx_built[m] = z.astype(np.float64)
+
+                pres[start:end] = pres_g
 
             out[i] = pres
 
@@ -204,9 +277,8 @@ class MaterialOccurrenceModel:
     def evaluate_calibration(self, X, y_presence, n_bins=10):
         """Reliability diagnostics for Stage 1 presence probabilities.
 
-        Uses the current predict_proba output (calibrated if calibrate() has
-        been called, raw otherwise) to compute per-material metrics and
-        reliability curve data.
+        Uses predict_proba output (Platt-calibrated via CalibratedClassifierCV)
+        to compute per-material metrics and reliability curve data.
 
         Parameters
         ----------
@@ -219,13 +291,9 @@ class MaterialOccurrenceModel:
         dict[material -> dict] keys: mean_pred_bins, frac_pos_bins,
             brier, pred_mean, obs_freq
         """
-        proba     = self.predict_proba(X)
-        cal_state = ("calibrated"
-                     if any(v is not None for v in self.calibrators_.values())
-                     else "raw")
-
+        proba = self.predict_proba(X)
         print(f"  {'Material':<12}  {'Brier':>8}  {'Mean pred':>10}  "
-              f"{'Obs freq':>10}  {'Bias':>8}  State: {cal_state}")
+              f"{'Obs freq':>10}  {'Bias':>8}")
         print("  " + "-" * 62)
 
         results = {}
@@ -260,273 +328,67 @@ class MaterialOccurrenceModel:
         return results
 
 
-class _PerMaterialMoE:
-    """Mixture-of-Experts intensity regressor for a single material (log-space).
+class _PerMaterialQuantileXGB:
+    """Quantile XGBoost intensity regressor for a single material (log-space).
 
-    Fits K latent regimes on log-transformed targets via GaussianMixture, trains
-    one XGBoost expert per regime plus a gating XGBClassifier.  Quantile
-    inference uses the law of total variance over the Gaussian mixture, which
-    produces wider intervals when the gating is uncertain (the key benefit for
-    multimodal materials like Concrete and Brick).
+    Fits one XGBRegressor with objective='reg:quantileerror' at three levels
+    [0.05, 0.50, 0.95].  Arbitrary quantiles use a Gaussian approximation
+    whose sigma is recovered from the p05/p95 spread (z_{0.95} ≈ 1.6449).
     """
 
-    def __init__(self, n_components, xgb_params, random_state):
-        self.n_components = n_components
+    ALPHAS = [0.05, 0.50, 0.95]
+
+    def __init__(self, xgb_params):
         self.xgb_params = xgb_params
-        self.random_state = random_state
 
     def fit(self, X, y_log):
-        n = len(y_log)
-        # Require at least 5 samples per component to avoid degenerate splits.
-        K = max(1, min(self.n_components, n // 5))
-
-        gm = GaussianMixture(
-            n_components=K, random_state=self.random_state, n_init=3, max_iter=300
+        kw = {k: v for k, v in self.xgb_params.items() if k != "objective"}
+        self.model_ = XGBRegressor(
+            objective="reg:quantileerror",
+            quantile_alpha=self.ALPHAS,
+            **kw,
         )
-        gm.fit(y_log.reshape(-1, 1))
-        raw_labels = gm.predict(y_log.reshape(-1, 1))
-
-        # Compact labels to 0..K'-1 in case some GM components are empty.
-        unique, raw_labels = np.unique(raw_labels, return_inverse=True)
-        K = len(unique)
-        self.K_ = K
-
-        # Store GMM and label mapping so held-out y can be assigned to regimes.
-        self.gm_ = gm
-        self.orig_to_compact_ = {int(orig): compact for compact, orig in enumerate(unique)}
-        self.train_labels_ = raw_labels.copy()
-        self.train_y_log_ = y_log.copy()
-
-        # Gating classifier: P(regime | X).
-        if K == 1:
-            self.gate_ = None
-        else:
-            gate_kw = {k: v for k, v in self.xgb_params.items() if k != "objective"}
-            self.gate_ = XGBClassifier(**gate_kw)
-            self.gate_.fit(X, raw_labels)
-
-        # One expert per regime + per-regime residual std.
-        self.experts_ = {}
-        self.expert_sigmas_ = np.zeros(K)
-        for k in range(K):
-            mask = raw_labels == k
-            if mask.sum() < 2:
-                mask = np.ones(n, dtype=bool)
-            reg = XGBRegressor(**self.xgb_params)
-            reg.fit(X[mask], y_log[mask])
-            self.experts_[k] = reg
-            resids = y_log[mask] - reg.predict(X[mask])
-            self.expert_sigmas_[k] = max(float(np.std(resids)), 1e-6)
-
+        self.model_.fit(X, y_log)
         return self
 
-    def _regime_labels_from_y(self, y_log):
-        """Assign log-target values to compact regime labels using the fitted GMM."""
-        gm_preds = self.gm_.predict(y_log.reshape(-1, 1))
-        return np.array([self.orig_to_compact_.get(int(p), -1) for p in gm_preds])
+    def predict_q_log(self, X):
+        """(n, 3) array of [p05, p50, p95] in log-space."""
+        return self.model_.predict(X)
 
-    def evaluate_gating(self, X, y_log):
-        """Print gating classifier diagnostics against GMM-derived regime labels."""
-        if self.K_ == 1:
-            print("  Gating trivial: K=1 (single regime, no classifier needed).")
-            return
+    def _sigma(self, pq):
+        """Per-sample sigma from p05/p95 spread under Gaussian assumption."""
+        return np.maximum((pq[:, 2] - pq[:, 0]) / (2 * Z_QUANT_95), 1e-6)
 
-        true_labels = self._regime_labels_from_y(y_log)
-        valid = true_labels >= 0
-        if valid.sum() == 0:
-            print("  No valid regime labels to evaluate (all GMM components unseen).")
-            return
+    def predict_log_mean(self, X):
+        """Median in log-space (used by JointDistributionModel)."""
+        return self.predict_q_log(X)[:, 1]
 
-        X_ev, y_true = X[valid], true_labels[valid]
-        y_pred = self.gate_.predict(X_ev)
+    def predict_quantiles(self, X, q_lo=0.05, q_hi=0.95):
+        """Returns (p_lo, p50, p_hi) in original (non-log) space.
 
-        acc = accuracy_score(y_true, y_pred)
-        cm = confusion_matrix(y_true, y_pred)
-        report = classification_report(y_true, y_pred, zero_division=0)
-
-        # Reorder predict_proba columns to match compact regime indices.
-        proba_raw = self.gate_.predict_proba(X_ev)
-        gate_proba = np.zeros((X_ev.shape[0], self.K_))
-        for col, cls in enumerate(self.gate_.classes_):
-            gate_proba[:, int(cls)] = proba_raw[:, col]
-        mean_conf = float(gate_proba.max(axis=1).mean())
-
-        print(f"  Gating accuracy : {acc:.3f}  (K={self.K_} regimes, n={valid.sum()})")
-        print(f"  Mean max gating confidence : {mean_conf:.3f}")
-        print("  Confusion matrix (rows=true regime, cols=predicted regime):")
-        print(cm)
-        print("  Per-class precision / recall / F1:")
-        print(report)
-
-        # Interpretation
-        if acc < 0.50:
-            if mean_conf > 0.70:
-                print(
-                    "  [Interpretation] High confidence + low accuracy: the gating model is\n"
-                    "  decisive but systematically wrong. Likely cause — regime overlap or\n"
-                    "  bad GMM clustering: the GMM split y into regimes that are not\n"
-                    "  separable in X-space (features carry no signal about which regime a\n"
-                    "  sample belongs to). Consider reducing K or using a different\n"
-                    "  clustering criterion."
-                )
-            else:
-                print(
-                    "  [Interpretation] Low accuracy + low confidence: regime assignment\n"
-                    "  is not learnable from X. The features do not predict which regime a\n"
-                    "  sample falls into, so MoE gating is near-random. The model falls back\n"
-                    "  to a uniform mixture, which provides wider intervals but no regime\n"
-                    "  specialisation benefit."
-                )
-        elif acc < 0.70:
-            if mean_conf > 0.70:
-                print(
-                    "  [Interpretation] Moderate accuracy + high confidence: gating is\n"
-                    "  decisive but makes systematic errors on some regimes. Check per-class\n"
-                    "  recall — a minority regime with low recall is being swallowed by the\n"
-                    "  majority regime."
-                )
-            else:
-                print(
-                    "  [Interpretation] Moderate accuracy + low confidence: gating is\n"
-                    "  uncertain. MoE averages over regimes with similar weights, which still\n"
-                    "  inflates prediction intervals appropriately but provides limited\n"
-                    "  expert specialisation."
-                )
-        else:
-            print(
-                "  [Interpretation] Good gating accuracy — regime assignment is learnable\n"
-                "  from X. MoE gating is functioning as intended."
-            )
-
-    def evaluate_expert_diversity(self, X):
-        """Print expert specialisation diagnostics on held-out X.
-
-        Covers four things:
-          1. Regime sample counts from training.
-          2. Target mean/std per regime (log-space) from training.
-          3. Pairwise correlation between expert predictions on X.
-          4. Mean absolute difference between expert predictions on X.
+        Arbitrary q_lo / q_hi are computed via Gaussian approximation: sigma is
+        recovered from the p05/p95 spread, then used with the normal PPF.
         """
-        K = self.K_
-
-        # 1. Regime sample counts
-        counts = np.bincount(self.train_labels_, minlength=K)
-        print(f"  Regime sample counts (training) : { {k: int(counts[k]) for k in range(K)} }")
-
-        # 2. Target stats per regime (log-space, training data)
-        print("  Target log-space stats per regime (training):")
-        for k in range(K):
-            mask = self.train_labels_ == k
-            vals = self.train_y_log_[mask]
-            print(f"    Regime {k}: n={int(mask.sum()):4d}  mean={vals.mean():.3f}  std={vals.std():.3f}")
-
-        if K == 1:
-            print("  Only 1 regime — no pairwise expert comparison.")
-            return
-
-        # 3 & 4. Expert predictions on held-out X
-        preds = np.stack([self.experts_[k].predict(X) for k in range(K)], axis=0)  # (K, n)
-
-        corr = np.corrcoef(preds)  # (K, K)
-        print("  Pairwise correlation between expert predictions (log-space):")
-        header = "         " + "  ".join(f"Exp{k}" for k in range(K))
-        print(header)
-        for k1 in range(K):
-            row = f"    Exp{k1}  " + "  ".join(f"{corr[k1, k2]:+.3f}" for k2 in range(K))
-            print(row)
-
-        print("  Mean |expert_i − expert_j| on held-out X (log-space):")
-        for k1 in range(K):
-            for k2 in range(k1 + 1, K):
-                diff = float(np.mean(np.abs(preds[k1] - preds[k2])))
-                print(f"    |Exp{k1} − Exp{k2}| = {diff:.4f}")
-
-        # Collapsed flag: high correlation + small diff ⇒ experts not specialised
-        pairs = [(k1, k2) for k1 in range(K) for k2 in range(k1 + 1, K)]
-        mean_corr = float(np.mean([corr[k1, k2] for k1, k2 in pairs]))
-        mean_diff = float(np.mean([np.mean(np.abs(preds[k1] - preds[k2])) for k1, k2 in pairs]))
-        if mean_corr > 0.95 and mean_diff < 0.10:
-            print(
-                "  [Interpretation] Experts are nearly identical (corr > 0.95, mean diff < 0.10).\n"
-                "  The MoE is not benefiting from specialisation — experts have collapsed.\n"
-                "  Possible causes: regime boundaries too similar, K too large, or training\n"
-                "  data insufficient to differentiate expert behaviours."
-            )
-        elif mean_corr > 0.85:
-            print(
-                "  [Interpretation] Experts are moderately correlated (corr > 0.85).\n"
-                "  Some specialisation present but limited. Check whether regime means\n"
-                "  (above) differ substantially — if not, consider reducing K."
-            )
-        else:
-            print(
-                "  [Interpretation] Experts show meaningful diversity — regime specialisation\n"
-                "  is working as intended."
-            )
+        pq    = self.predict_q_log(X)                                      # (n, 3)
+        mu    = pq[:, 1]
+        sigma = self._sigma(pq)
+        p_lo  = np.maximum(np.exp(mu + stats.norm.ppf(q_lo) * sigma) - LOG_EPS, 0.0)
+        p50   = np.maximum(np.exp(mu) - LOG_EPS, 0.0)
+        p_hi  = np.maximum(np.exp(mu + stats.norm.ppf(q_hi) * sigma) - LOG_EPS, 0.0)
+        return p_lo, p50, p_hi
 
     def crps_gaussian(self, X, y_log):
-        """Analytical Gaussian CRPS for the mixture predictive distribution (log-space).
-
-        Uses the law-of-total-variance mixture mu/sigma (same as predict_quantiles),
-        then applies: CRPS = sigma*(z*(2*Phi(z)-1) + 2*phi(z) - 1/sqrt(pi))
-        where z = (y - mu) / sigma.  Returns mean CRPS over samples.
-        """
-        K = self.K_
-        w = self._weights(X)                                               # (n, K)
-        mu = np.stack([self.experts_[k].predict(X) for k in range(K)], axis=1)
-        sigma_k = self.expert_sigmas_                                      # (K,)
-
-        mu_mix = (w * mu).sum(axis=1)                                      # (n,)
-        within_var = (w * sigma_k[np.newaxis, :] ** 2).sum(axis=1)
-        between_var = (w * (mu - mu_mix[:, np.newaxis]) ** 2).sum(axis=1)
-        sigma_mix = np.sqrt(np.maximum(within_var + between_var, 1e-12))   # (n,)
-
-        z = (y_log - mu_mix) / sigma_mix
-        crps = sigma_mix * (
+        """Gaussian CRPS using quantile-inferred mu and sigma (log-space)."""
+        pq    = self.predict_q_log(X)
+        mu    = pq[:, 1]
+        sigma = self._sigma(pq)
+        z = (y_log - mu) / sigma
+        crps = sigma * (
             z * (2.0 * stats.norm.cdf(z) - 1.0)
             + 2.0 * stats.norm.pdf(z)
             - 1.0 / np.sqrt(np.pi)
         )
         return float(np.mean(crps))
-
-    def _weights(self, X):
-        """Returns gate probabilities as (n_samples, K) array."""
-        n, K = X.shape[0], self.K_
-        if self.gate_ is None:
-            return np.ones((n, 1))
-        w = np.zeros((n, K))
-        proba = self.gate_.predict_proba(X)
-        for col, cls in enumerate(self.gate_.classes_):
-            w[:, int(cls)] = proba[:, col]
-        return w
-
-    def predict_log_mean(self, X):
-        """Mixture mean in log-space (used by JointDistributionModel)."""
-        w = self._weights(X)                                               # (n, K)
-        mu = np.stack([self.experts_[k].predict(X) for k in range(self.K_)], axis=1)
-        return (w * mu).sum(axis=1)                                        # (n,)
-
-    def predict_quantiles(self, X, q_lo=0.05, q_hi=0.95):
-        """Mixture quantiles via law of total variance + Gaussian approx.
-
-        Returns (p_lo, p50, p_hi) as numpy arrays in original (non-log) space.
-        Mixture variance = E[Var[Y|Z]] (within-regime) + Var[E[Y|Z]] (between-
-        regime), so uncertain gating automatically inflates the interval width.
-        """
-        K = self.K_
-        w = self._weights(X)                                               # (n, K)
-        mu = np.stack([self.experts_[k].predict(X) for k in range(K)], axis=1)
-        sigma_k = self.expert_sigmas_                                      # (K,)
-
-        mu_mix = (w * mu).sum(axis=1)                                      # (n,)
-        within_var = (w * sigma_k[np.newaxis, :] ** 2).sum(axis=1)
-        between_var = (w * (mu - mu_mix[:, np.newaxis]) ** 2).sum(axis=1)
-        sigma_mix = np.sqrt(np.maximum(within_var + between_var, 1e-12))   # (n,)
-
-        p_lo = np.maximum(np.exp(mu_mix + stats.norm.ppf(q_lo) * sigma_mix) - LOG_EPS, 0.0)
-        p50  = np.maximum(np.exp(mu_mix) - LOG_EPS, 0.0)
-        p_hi = np.maximum(np.exp(mu_mix + stats.norm.ppf(q_hi) * sigma_mix) - LOG_EPS, 0.0)
-        return p_lo, p50, p_hi
 
 
 class MaterialIntensityModel:
@@ -540,7 +402,6 @@ class MaterialIntensityModel:
         reg_alpha=0.0,
         reg_lambda=1.0,
         random_state=SEED,
-        n_components=3,
     ):
         self.xgb_params = dict(
             n_estimators=n_estimators,
@@ -551,11 +412,8 @@ class MaterialIntensityModel:
             reg_alpha=reg_alpha,
             reg_lambda=reg_lambda,
             random_state=random_state,
-            objective="reg:squarederror",
             verbosity=0,
         )
-        self.n_components = n_components
-        self.random_state = random_state
         self.models_ = {}
 
     def fit(self, X, y_raw, y_presence):
@@ -566,105 +424,44 @@ class MaterialIntensityModel:
                 self.models_[material] = None
                 continue
             y_log = np.log(y_raw[obs, m] + LOG_EPS)
-            moe = _PerMaterialMoE(
-                n_components=self.n_components,
-                xgb_params=self.xgb_params,
-                random_state=self.random_state,
-            )
-            moe.fit(X[obs], y_log)
-            self.models_[material] = moe
+            qxgb = _PerMaterialQuantileXGB(xgb_params=self.xgb_params)
+            qxgb.fit(X[obs], y_log)
+            self.models_[material] = qxgb
         return self
 
     def predict_log(self, X):
-        """Mixture mean in log-space — backward-compatible with JointDistributionModel."""
+        """Median in log-space — backward-compatible with JointDistributionModel."""
         n_rows = X.shape[0]
         mu_log = np.zeros((n_rows, len(Y_COLS)), dtype=np.float64)
         for m, material in enumerate(Y_COLS):
-            moe = self.models_.get(material)
-            if moe is not None:
-                mu_log[:, m] = moe.predict_log_mean(X)
+            qxgb = self.models_.get(material)
+            if qxgb is not None:
+                mu_log[:, m] = qxgb.predict_log_mean(X)
         return mu_log
 
     def predict(self, X):
         return np.maximum(np.exp(self.predict_log(X)) - LOG_EPS, 0.0)
 
     def predict_intervals(self, X, alpha=0.10):
-        """MoE quantile intervals.  Output: {material: {'p5', 'p50', 'p95'}}."""
+        """Quantile intervals.  Output: {material: {'p5', 'p50', 'p95'}}."""
         q_lo, q_hi = alpha / 2.0, 1.0 - alpha / 2.0
         result = {}
         n = X.shape[0]
         for material in Y_COLS:
-            moe = self.models_.get(material)
-            if moe is None:
-                result[material] = {
-                    "p5": np.zeros(n),
-                    "p50": np.zeros(n),
-                    "p95": np.zeros(n),
-                }
+            qxgb = self.models_.get(material)
+            if qxgb is None:
+                result[material] = {"p5": np.zeros(n), "p50": np.zeros(n), "p95": np.zeros(n)}
             else:
-                p_lo, p50, p_hi = moe.predict_quantiles(X, q_lo=q_lo, q_hi=q_hi)
+                p_lo, p50, p_hi = qxgb.predict_quantiles(X, q_lo=q_lo, q_hi=q_hi)
                 result[material] = {"p5": p_lo, "p50": p50, "p95": p_hi}
         return result
 
-    def evaluate_gating(self, X, y):
-        """Print gating diagnostics per material on held-out (val or test) data.
-
-        Parameters
-        ----------
-        X : np.ndarray  preprocessed feature matrix (n_samples, n_features)
-        y : np.ndarray or DataFrame  raw targets (n_samples, n_materials), NaN for missing
-        """
-        if hasattr(y, "to_numpy"):
-            y = y.to_numpy(dtype=np.float64)
-
-        for m, material in enumerate(Y_COLS):
-            print(f"\nMaterial: {material}")
-            moe = self.models_.get(material)
-            if moe is None:
-                print("  No model fitted (insufficient training data).")
-                continue
-            obs = (~np.isnan(y[:, m])) & (y[:, m] > 0)
-            if obs.sum() < 2:
-                print("  Insufficient observed presence rows for evaluation.")
-                continue
-            y_log = np.log(y[obs, m] + LOG_EPS)
-            moe.evaluate_gating(X[obs], y_log)
-
-    def evaluate_expert_diversity(self, X, y):
-        """Print expert diversity diagnostics per material on held-out data.
-
-        Parameters
-        ----------
-        X : np.ndarray  preprocessed feature matrix (n_samples, n_features)
-        y : np.ndarray or DataFrame  raw targets (n_samples, n_materials), NaN for missing
-        """
-        if hasattr(y, "to_numpy"):
-            y = y.to_numpy(dtype=np.float64)
-
-        for m, material in enumerate(Y_COLS):
-            print(f"\nMaterial: {material}")
-            moe = self.models_.get(material)
-            if moe is None:
-                print("  No model fitted (insufficient training data).")
-                continue
-            obs = (~np.isnan(y[:, m])) & (y[:, m] > 0)
-            if obs.sum() < 2:
-                print("  Insufficient observed presence rows for evaluation.")
-                continue
-            moe.evaluate_expert_diversity(X[obs])
-
     def evaluate_crps(self, X, y):
-        """Print mean CRPS per material on held-out data.
+        """Print mean CRPS per material on held-out data (log-space).
 
         CRPS (Continuous Ranked Probability Score) evaluates the full predictive
-        distribution, not just the point forecast.  Lower is better; a perfectly
-        calibrated Gaussian achieves CRPS = sigma * (1/sqrt(pi) - 1) ≈ −0.43*sigma.
-        Reported in log-space so values are scale-comparable across materials.
-
-        Parameters
-        ----------
-        X : np.ndarray  preprocessed feature matrix (n_samples, n_features)
-        y : np.ndarray or DataFrame  raw targets (n_samples, n_materials), NaN for missing
+        distribution, not just the point forecast.  Reported in log-space so values
+        are scale-comparable across materials.
         """
         if hasattr(y, "to_numpy"):
             y = y.to_numpy(dtype=np.float64)
@@ -672,8 +469,8 @@ class MaterialIntensityModel:
         print(f"  {'Material':<12}  {'n_obs':>6}  {'Mean CRPS (log-space)':>22}")
         print("  " + "-" * 44)
         for m, material in enumerate(Y_COLS):
-            moe = self.models_.get(material)
-            if moe is None:
+            qxgb = self.models_.get(material)
+            if qxgb is None:
                 print(f"  {material:<12}  {'—':>6}  {'no model':>22}")
                 continue
             obs = (~np.isnan(y[:, m])) & (y[:, m] > 0)
@@ -681,7 +478,7 @@ class MaterialIntensityModel:
                 print(f"  {material:<12}  {'—':>6}  {'too few rows':>22}")
                 continue
             y_log = np.log(y[obs, m] + LOG_EPS)
-            crps = moe.crps_gaussian(X[obs], y_log)
+            crps = qxgb.crps_gaussian(X[obs], y_log)
             print(f"  {material:<12}  {int(obs.sum()):>6}  {crps:>22.4f}")
 
     def evaluate_calibration(self, X, y, levels=None):
@@ -691,16 +488,6 @@ class MaterialIntensityModel:
         computes the fraction of held-out presence rows whose true value falls
         inside the symmetric predictive interval.  Returns a dict suitable for
         calibration plotting; also prints a table.
-
-        Parameters
-        ----------
-        X      : np.ndarray  preprocessed feature matrix (n_samples, n_features)
-        y      : np.ndarray or DataFrame  raw targets, NaN for missing
-        levels : array-like of floats in (0, 1), default np.linspace(0.10, 0.90, 9)
-
-        Returns
-        -------
-        dict[material, np.ndarray]  empirical coverages aligned with levels
         """
         if hasattr(y, "to_numpy"):
             y = y.to_numpy(dtype=np.float64)
@@ -714,8 +501,8 @@ class MaterialIntensityModel:
         print("  " + "-" * (22 + 7 * len(levels)))
 
         for m, material in enumerate(Y_COLS):
-            moe = self.models_.get(material)
-            if moe is None:
+            qxgb = self.models_.get(material)
+            if qxgb is None:
                 print(f"  {material:<12}  {'—':>6}    no model")
                 continue
             obs = (~np.isnan(y[:, m])) & (y[:, m] > 0)
@@ -728,7 +515,7 @@ class MaterialIntensityModel:
             emp = []
             for lv in levels:
                 alpha = 1.0 - lv
-                p_lo, _, p_hi = moe.predict_quantiles(X_obs, q_lo=alpha / 2.0, q_hi=1.0 - alpha / 2.0)
+                p_lo, _, p_hi = qxgb.predict_quantiles(X_obs, q_lo=alpha / 2.0, q_hi=1.0 - alpha / 2.0)
                 emp.append(float(((y_obs >= p_lo) & (y_obs <= p_hi)).mean()))
             emp = np.array(emp)
             results[material] = emp
@@ -748,36 +535,96 @@ class JointDistributionModel:
         self.global_cov_ = None
         self.group_covs_ = {}
 
-    def _regularise_cov(self, cov):
-        diag_cov = np.diag(np.diag(cov))
-        shrunk = (1.0 - self.cov_shrink) * cov + self.cov_shrink * diag_cov
-        eye_m = np.eye(len(Y_COLS))
-        return shrunk + eye_m * self.reg_eps
+    def _pairwise_cov(self, residuals, presence):
+        """Covariance matrix built pairwise: each (m1,m2) uses rows where both present."""
+        M = len(Y_COLS)
+        cov = np.zeros((M, M))
+        for m1 in range(M):
+            for m2 in range(m1, M):
+                both = presence[:, m1] & presence[:, m2]
+                if both.sum() < 2:
+                    continue
+                r1 = residuals[both, m1]
+                r2 = residuals[both, m2]
+                if m1 == m2:
+                    cov[m1, m1] = float(np.var(r1, ddof=1))
+                else:
+                    c = float(np.cov(r1, r2, ddof=1)[0, 1])
+                    cov[m1, m2] = cov[m2, m1] = c
+        return cov
+
+    def _regularise_cov(self, cov, ref=None):
+        """Shrink toward ref (global cov for groups, diagonal for global), then add reg_eps * I."""
+        if ref is None:
+            ref = np.diag(np.diag(cov))
+        shrunk = (1.0 - self.cov_shrink) * cov + self.cov_shrink * ref
+        return shrunk + np.eye(len(Y_COLS)) * self.reg_eps
 
     def fit(self, X_proc, X_raw, y_raw, y_presence, intensity_model):
-        # Complete cases: all five materials are truly present (observed AND > 0).
-        # Using y_mask.all() would include observed-as-zero rows, whose log(0+eps)
-        # values contaminate the residual covariance with near-−∞ entries.
-        complete = y_presence.all(axis=1)
-        if complete.sum() < len(Y_COLS):
-            raise ValueError(f"Need >= {len(Y_COLS)} presence-complete rows; got {complete.sum()}.")
+        # Pairwise-eligible rows: at least 2 materials present.
+        # Replaces the old all-present complete-case filter so smaller groups
+        # (S, W) are no longer starved of residual rows.
+        usable = y_presence.sum(axis=1) >= 2
+        if usable.sum() < len(Y_COLS):
+            raise ValueError(f"Need >= {len(Y_COLS)} pairwise-usable rows; got {usable.sum()}.")
 
         mu_log = intensity_model.predict_log(X_proc)
-        y_log = np.log(y_raw[complete] + LOG_EPS)
-        residuals = y_log - mu_log[complete]
-        groups = build_group_keys(X_raw.loc[complete].reset_index(drop=True), self.group_cols)
 
-        eye_m = np.eye(len(Y_COLS))
-        self.global_cov_ = (
-            self._regularise_cov(np.cov(residuals, rowvar=False))
-            if residuals.shape[0] >= len(Y_COLS)
-            else eye_m * self.reg_eps
-        )
+        # Log-residuals for usable rows; NaN where material is absent
+        p_sub  = y_presence[usable]
+        y_sub  = y_raw[usable].astype(np.float64)
+        y_log  = np.where(p_sub, np.log(np.where(p_sub, y_sub + LOG_EPS, 1.0)), np.nan)
+        residuals = y_log - mu_log[usable]   # (n_usable, M); NaN for absent materials
+
+        groups = build_group_keys(X_raw.loc[usable].reset_index(drop=True), self.group_cols)
+
+        # ── Diagnostics ────────────────────────────────────────────────────────
+        all_groups_raw = build_group_keys(X_raw.reset_index(drop=True), self.group_cols)
+        uniq_raw = np.unique(all_groups_raw)
+        uniq_use = np.unique(groups)
+
+        print(f"\nJointDistributionModel.fit()  |  eligibility: ≥2 materials present")
+        print(f"  usable rows: {usable.sum()} / {len(usable)}\n")
+
+        print(f"  {'Group':<10}  {'Raw':>6}  {'Usable':>8}  {'Decision':>14}")
+        print("  " + "-" * 46)
+        for g in uniq_raw:
+            raw_n = int((all_groups_raw == g).sum())
+            use_n = int((groups == g).sum()) if g in uniq_use else 0
+            decision = "RETAINED" if use_n >= self.min_group_size else f"DROPPED (<{self.min_group_size})"
+            print(f"  {g:<10}  {raw_n:>6}  {use_n:>8}  {decision:>14}")
+
+        print(f"\n  Usable rows per material pair:")
+        print(f"  {'Pair':<26}  {'n_rows':>7}")
+        print("  " + "-" * 36)
+        for m1 in range(len(Y_COLS)):
+            for m2 in range(m1, len(Y_COLS)):
+                both = p_sub[:, m1] & p_sub[:, m2]
+                print(f"  ({Y_COLS[m1]:<10}, {Y_COLS[m2]:<10})  {int(both.sum()):>7}")
+
+        # ── Global covariance (pairwise, all usable rows) ──────────────────────
+        global_raw = self._pairwise_cov(residuals, p_sub)
+        self.global_cov_ = self._regularise_cov(global_raw)
+
+        # ── Per-group covariances ──────────────────────────────────────────────
         self.group_covs_ = {}
-        for g in np.unique(groups):
-            g_res = residuals[groups == g]
-            if g_res.shape[0] >= self.min_group_size:
-                self.group_covs_[g] = self._regularise_cov(np.cov(g_res, rowvar=False))
+        print(f"\n  Group covariance  (min_group_size={self.min_group_size}):")
+        print(f"  {'Group':<10}  {'Rows':>6}  {'Raw rank':>9}  {'Decision':>10}")
+        print("  " + "-" * 44)
+        for g in uniq_use:
+            g_mask = groups == g
+            n      = int(g_mask.sum())
+            g_res  = residuals[g_mask]
+            g_pres = p_sub[g_mask]
+            if n >= self.min_group_size:
+                g_cov_raw = self._pairwise_cov(g_res, g_pres)
+                self.group_covs_[g] = self._regularise_cov(g_cov_raw, ref=self.global_cov_)
+                rank = int(np.linalg.matrix_rank(g_cov_raw))
+                print(f"  {g:<10}  {n:>6}  {rank:>9}  {'RETAINED':>10}")
+            else:
+                print(f"  {g:<10}  {n:>6}  {'—':>9}  {f'DROPPED':>10}")
+
+        print(f"\n  Retained groups: {sorted(self.group_covs_.keys())}")
         return self
 
     def get_cov(self, group):
@@ -817,7 +664,6 @@ class TwoStageConditionalModel:
         reg_eps=1e-4,
         cov_shrink=0.0,
         random_state=SEED,
-        n_components=3,
     ):
         xgb_kw = dict(
             n_estimators=n_estimators,
@@ -830,12 +676,12 @@ class TwoStageConditionalModel:
             random_state=random_state,
         )
         self.stage1 = MaterialOccurrenceModel(**xgb_kw)
-        self.stage2 = MaterialIntensityModel(**xgb_kw, n_components=n_components)
+        self.stage2 = MaterialIntensityModel(**xgb_kw)
         self.joint = JointDistributionModel(
             group_cols=group_cols,
             min_group_size=min_group_size,
             reg_eps=reg_eps,
-            cov_shrink=cov_shrink,
+            cov_shrink=0.4,
         )
 
     def fit(self, X_proc, X_raw, y_raw, y_mask):
@@ -844,6 +690,21 @@ class TwoStageConditionalModel:
         self.stage1.fit(X_proc, y_presence)
         self.stage2.fit(X_proc, y_raw, y_presence)
         self.joint.fit(X_proc, X_raw, y_raw, y_presence, self.stage2)
+
+        # Per-material empirical intensity bounds (p5/p95) for post-sampling clamp.
+        # Computed on training presence rows only; used in sample_query() to prevent
+        # out-of-distribution intensity samples without truncating realistic extremes.
+        self.intensity_bounds_ = []
+        for m in range(len(Y_COLS)):
+            obs = y_presence[:, m]
+            if obs.sum() >= 2:
+                vals = y_raw[obs, m]
+                self.intensity_bounds_.append(
+                    (float(np.percentile(vals, 1)), float(np.percentile(vals, 99)))
+                )
+            else:
+                self.intensity_bounds_.append((0.0, np.inf))
+
         return self
 
     def predict(self, X_proc, groups, alpha=0.10):
@@ -853,27 +714,12 @@ class TwoStageConditionalModel:
             intervals[mat]["p_presence"] = proba[:, m]
         return intervals
 
-    def calibrate_stage1(self, X_val, y_val_raw, y_val_mask):
-        """Calibrate Stage 1 presence probabilities on validation data.
-
-        Derives y_val_presence = y_val_mask & (y_val_raw > 0) and delegates
-        to stage1.calibrate().  Call once after fit(), before sampling.
-
-        Parameters
-        ----------
-        X_val       : np.ndarray (n_val, n_features) preprocessed features
-        y_val_raw   : np.ndarray (n_val, n_materials) raw intensities
-        y_val_mask  : np.ndarray (n_val, n_materials) bool, observed (notna)
-        """
-        self.stage1.calibrate(X_val, y_val_mask & (y_val_raw > 0))
-        return self
-
     def sample_query(
         self,
         X_proc,
         groups,
         n_samples=1000,
-        temperature=1.5,
+        temperature=2.5,
         random_state=None,
     ):
         """Sample from the full joint predictive distribution.
@@ -882,9 +728,9 @@ class TwoStageConditionalModel:
                   `temperature` before Bernoulli draw.  temperature > 1
                   pushes probabilities toward 0.5, increasing combination
                   diversity and reducing over-saturation.
-        Stage 2 — Hard expert routing: samples a discrete regime k from
-                  the gating distribution, then draws from that expert's
-                  N(mu_k, sigma_k²) rather than the mixture mean.
+        Stage 2 — Quantile XGBoost sampling: recovers mu (p50) and sigma
+                  (from p05/p95 spread) from the quantile model, then draws
+                  from N(mu, sigma²) in log-space.
         Stage 3 — Active-material joint residual: applies the group
                   covariance only to the materials that are present in
                   each draw, avoiding spurious cross-material correlation
@@ -895,7 +741,7 @@ class TwoStageConditionalModel:
         X_proc      : np.ndarray (n_rows, n_features) preprocessed features
         groups      : np.ndarray (n_rows,) group labels from build_group_keys
         n_samples   : int   draws per query row
-        temperature : float temperature for presence logit scaling (default 1.5)
+        temperature : float temperature for presence logit scaling (default 2.5)
         random_state: int or None
 
         Returns
@@ -906,62 +752,129 @@ class TwoStageConditionalModel:
         rng    = np.random.default_rng(random_state)
         n_rows = X_proc.shape[0]
         M      = len(Y_COLS)
-        _eps   = 1e-9
 
-        # Stage 1: temperature-scaled presence probabilities
-        p_raw  = self.stage1.predict_proba(X_proc)                  # (n_rows, M)
-        logit_p = np.log(p_raw.clip(_eps, 1 - _eps) /
-                         (1 - p_raw.clip(_eps, 1 - _eps)))
-        p_pres  = 1.0 / (1.0 + np.exp(-logit_p / temperature))     # (n_rows, M)
+        # Stage 1: chain-sampled presence — preserves conditional co-occurrence structure
+        all_presence = self.stage1.sample_presence(
+            X_proc, n_samples=n_samples, temperature=temperature, random_state=rng,
+            primary_codes=groups,
+        )                                                            # (n_rows, n_samples, M)
 
-        all_samples  = np.zeros((n_rows, n_samples, M), dtype=np.float64)
-        all_presence = np.zeros((n_rows, n_samples, M), dtype=bool)
+        all_samples = np.zeros((n_rows, n_samples, M), dtype=np.float64)
 
         for i in range(n_rows):
             Xi    = X_proc[i : i + 1]                               # (1, n_feat)
             Sigma = self.joint.get_cov(groups[i])                   # (M, M)
+            Z     = all_presence[i]                                  # (n_samples, M) bool
 
-            # Presence draws for all samples at once
-            Z = rng.random((n_samples, M)) < p_pres[i]             # (n_samples, M)
-            all_presence[i] = Z
 
             for s in range(n_samples):
-                y_log = np.zeros(M)
+                y_log    = np.zeros(M)
+                sigma_sq = np.zeros(M)   # Stage 2 per-material variance (for lognormal correction)
 
                 for m, material in enumerate(Y_COLS):
                     if not Z[s, m]:
                         continue
-                    moe = self.stage2.models_.get(material)
-                    if moe is None:
+                    qxgb = self.stage2.models_.get(material)
+                    if qxgb is None:
                         continue
 
-                    # Stage 2: sample a discrete expert regime
-                    if moe.K_ == 1:
-                        k = 0
-                    else:
-                        gate_w = moe._weights(Xi)[0]                # (K,)
-                        gate_w = gate_w / gate_w.sum()              # guard fp drift
-                        k = int(rng.choice(moe.K_, p=gate_w))
+                    # Stage 2: sample from quantile-inferred N(mu, sigma²)
+                    pq_log = qxgb.predict_q_log(Xi)                 # (1, 3)
+                    mu     = float(pq_log[0, 1])
+                    sigma  = max(float(pq_log[0, 2] - pq_log[0, 0]) / (2 * Z_QUANT_95), 1e-6)
+                    y_log[m]    = rng.normal(mu, sigma)
+                    sigma_sq[m] = sigma * sigma
 
-                    mu    = float(moe.experts_[k].predict(Xi)[0])
-                    sigma = float(moe.expert_sigmas_[k])
-                    y_log[m] = rng.normal(mu, sigma)
-
-                # Stage 3: joint residual for active materials only
+                # Stage 3: joint residual with damped cross-covariance.
+                # Off-diagonal entries of Sigma are scaled by CROSS_DAMP to separate
+                # per-material intensity variance (diagonal, preserved) from cross-material
+                # mean coupling (off-diagonal, reduced).  Prevents a high-intensity concrete
+                # draw from inflating correlated materials (wood, brick) through the joint
+                # residual — presence dependency is already handled by Stage 1 chain sampling.
                 active = Z[s]
                 if active.sum() >= 2:
-                    idx       = np.where(active)[0]
+                    idx      = np.where(active)[0]
+                    Sig_sub  = Sigma[np.ix_(idx, idx)]
+                    Sig_damp = CROSS_DAMP * Sig_sub
+                    diag_pos = np.arange(len(idx))
+                    Sig_damp[diag_pos, diag_pos] = Sig_sub[diag_pos, diag_pos]
                     eps_joint = rng.multivariate_normal(
                         np.zeros(len(idx)),
-                        Sigma[np.ix_(idx, idx)],
+                        Sig_damp,
                     )
+                    eps_joint *= RESIDUAL_SCALE
                     y_log[idx] += eps_joint
+
+                # Lognormal mean correction: removes upward bias from E[exp(X)] = exp(mu + sigma²/2).
+                # Diagonal of Sig_damp equals diagonal of Sigma, so sigma_eff² is unchanged.
+                # sigma_eff² = sigma_stage2² + RESIDUAL_SCALE² * Sigma[m,m]
+                for m in np.where(Z[s])[0]:
+                    sigma_eff_sq = sigma_sq[m] + RESIDUAL_SCALE**2 * float(Sigma[m, m])
+                    y_log[m] -= 0.5 * sigma_eff_sq
 
                 y = np.maximum(np.exp(y_log) - LOG_EPS, 0.0)
                 y *= Z[s]
+                if self.intensity_bounds_ is not None:
+                    for m in np.where(Z[s])[0]:
+                        lo, hi = self.intensity_bounds_[m]
+                        y[m] = np.clip(y[m], lo, hi)
                 all_samples[i, s] = y
 
         return all_samples, all_presence
+
+    def calibrate_sampling(
+        self,
+        X_val,
+        y_val_presence,
+        n_samples=2000,
+        temperature=2.5,
+        random_state=SEED,
+    ):
+        """Post-hoc calibration of joint sampling thresholds.
+
+        Fits one IsotonicRegression per material that maps the empirical
+        per-row sampled presence frequency (after full chain coupling and
+        temperature scaling) to the true binary presence on held-out
+        validation data.  Calibrators are stored in
+        stage1.presence_calibrators_ and applied automatically inside
+        sample_presence() at inference time.
+
+        The calibration target is the joint-sampled frequency, NOT the
+        raw Stage 1 classifier probability, so it corrects for the
+        over-saturation introduced by chain dependency coupling.
+
+        Parameters
+        ----------
+        X_val          : np.ndarray (n_val, n_features)  preprocessed
+        y_val_presence : np.ndarray (n_val, M) bool
+                         true presence = observed AND positive
+                         (same mask used in fit())
+        n_samples      : int   draws per val row; more → stable frequency
+                         estimates (default 2000)
+        temperature    : float same value used in sample_query()
+        random_state   : int or None
+
+        Returns
+        -------
+        self
+        """
+        all_pres = self.stage1.sample_presence(
+            X_val,
+            n_samples=n_samples,
+            temperature=temperature,
+            random_state=random_state,
+        )                                       # (n_val, n_samples, M)
+
+        sampled_freq = all_pres.mean(axis=1)   # (n_val, M) — per-row empirical rate
+
+        for m, material in enumerate(Y_COLS):
+            x_cal = sampled_freq[:, m]                    # (n_val,)
+            y_cal = y_val_presence[:, m].astype(float)    # (n_val,) 0/1
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(x_cal, y_cal)
+            self.stage1.presence_calibrators_[material] = iso
+
+        return self
 
     def evaluate_sampling_realism(
         self, X_proc, groups,
@@ -1100,3 +1013,83 @@ class TwoStageConditionalModel:
                     f"   {mat:<12}  {real_pf:>10.3f}  {samp_pf:>10.3f}  "
                     f"{rm_s}  {sm_s}  {status:>8}"
                 )
+
+    def evaluate_samples(
+        self, samples, presence, y_ref, y_ref_mask, groups_ref=None, query_groups=None,
+    ):
+        """Compute scalar validation metrics comparing samples to reference data.
+
+        Parameters
+        ----------
+        samples       : np.ndarray (n_rows, n_samples, M)  kg/m² from sample_query()
+        presence      : np.ndarray (n_rows, n_samples, M)  bool from sample_query()
+        y_ref         : np.ndarray (n_ref, M)              reference intensities
+        y_ref_mask    : np.ndarray (n_ref, M)  bool        observed AND positive
+        groups_ref    : np.ndarray (n_ref,) or None        group keys for y_ref rows
+        query_groups  : np.ndarray (n_rows,) or None       group keys for query rows
+
+        Returns
+        -------
+        dict with per-material entries, each containing:
+          pres_freq_err  absolute |sampled_freq − true_freq|
+          kl_div         KL divergence KL(true_intensity || sampled_intensity)
+          wasserstein1   Wasserstein-1 (earth mover's) distance on log-space intensities
+        """
+        from scipy.stats import wasserstein_distance
+
+        M = len(Y_COLS)
+        results = {}
+
+        for m, mat in enumerate(Y_COLS):
+            # ── Presence frequency error ───────────────────────────────────────
+            samp_freq = float(presence[:, :, m].mean())
+            true_freq = float(y_ref_mask[:, m].mean())
+            pres_err  = abs(samp_freq - true_freq)
+
+            # ── Intensity distributions (log-space, presence rows only) ───────
+            samp_vals = samples[:, :, m][presence[:, :, m]]   # flattened
+            ref_rows  = y_ref_mask[:, m]
+            ref_vals  = y_ref[ref_rows, m]
+
+            if len(samp_vals) < 2 or len(ref_vals) < 2:
+                results[mat] = dict(pres_freq_err=pres_err, kl_div=np.nan, wasserstein1=np.nan)
+                continue
+
+            samp_log = np.log(samp_vals + LOG_EPS)
+            ref_log  = np.log(ref_vals  + LOG_EPS)
+
+            # Wasserstein-1 on log-space intensities
+            w1 = float(wasserstein_distance(ref_log, samp_log))
+
+            # KL divergence via histogram approximation (true || sampled)
+            edges      = np.linspace(
+                min(ref_log.min(), samp_log.min()),
+                max(ref_log.max(), samp_log.max()),
+                31,
+            )
+            p_ref,  _  = np.histogram(ref_log,  bins=edges, density=True)
+            p_samp, _  = np.histogram(samp_log, bins=edges, density=True)
+            # Add small epsilon to avoid log(0); re-normalise
+            _eps       = 1e-10
+            p_ref      = p_ref  + _eps;  p_ref  /= p_ref.sum()
+            p_samp     = p_samp + _eps;  p_samp /= p_samp.sum()
+            kl         = float(np.sum(p_ref * np.log(p_ref / p_samp)))
+
+            results[mat] = dict(pres_freq_err=pres_err, kl_div=kl, wasserstein1=w1)
+
+        return results
+
+    def print_sample_metrics(
+        self, samples, presence, y_ref, y_ref_mask, groups_ref=None, query_groups=None,
+    ):
+        """Print evaluate_samples() as a formatted table."""
+        metrics = self.evaluate_samples(
+            samples, presence, y_ref, y_ref_mask, groups_ref, query_groups,
+        )
+        print(f"\n{'Material':<12}  {'Pres |err|':>10}  {'KL div':>8}  {'Wass-1':>8}")
+        print("-" * 44)
+        for mat in Y_COLS:
+            r  = metrics[mat]
+            kl = f"{r['kl_div']:>8.4f}" if not np.isnan(r["kl_div"]) else f"{'—':>8}"
+            w1 = f"{r['wasserstein1']:>8.4f}" if not np.isnan(r["wasserstein1"]) else f"{'—':>8}"
+            print(f"{mat:<12}  {r['pres_freq_err']:>10.4f}  {kl}  {w1}")

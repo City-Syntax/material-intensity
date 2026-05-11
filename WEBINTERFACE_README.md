@@ -3,9 +3,9 @@
 This web app serves predictions from the current **TwoStageConditionalModel** pipeline.
 
 Model internals:
-- Stage 1: `XGBClassifier` per material → `p_presence`
-- Stage 2 (MoE): `GaussianMixture` regimes + `XGBClassifier` gating + K `XGBRegressor` experts → `p5`, `p50`, `p95` via law-of-total-variance Gaussian mixture quantiles
-- Joint layer: group-specific multivariate normal on MoE log-residuals (Primary Code groups) — used for residual inspection, not for `predict()` intervals
+- Stage 1: classifier-chain `XGBClassifier` per material with Platt calibration (`CalibratedClassifierCV`) → `p_presence`
+- Stage 2: per-material `XGBRegressor` quantile regression (`reg:quantileerror`) in log-space → `p5`, `p50`, `p95`
+- Joint layer: group-specific multivariate normal on log-residuals (Primary Code groups) — used for residual inspection, not for `predict()` intervals
 
 ## Quick Start
 
@@ -28,7 +28,7 @@ Predictions include, for each material:
 - `p95` — 95th percentile (kg/m²)
 - `p_presence` — probability the material appears in the building
 
-Prediction intervals (`p5`, `p95`) are produced by the MoE Stage 2 using law-of-total-variance Gaussian mixture quantiles. The joint layer (Primary Code-grouped multivariate normal) is retained in the model object for residual inspection but does not drive app output.
+Prediction intervals (`p5`, `p95`) are produced by Stage 2 quantile regressors. The joint layer (Primary Code-grouped multivariate normal) is retained in the model object for residual inspection and sampling realism checks, but does not drive app output.
 
 ## Input Fields
 
