@@ -9,8 +9,6 @@ LOG_EPS = 1e-6
 Y_COLS = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 GROUP_COLS = ["Primary Code"]
 
-# Dominant structural material per Primary Code → minimum presence probability during sampling.
-# Applied after isotonic calibration, before the final probability clip.
 # ── Sampling hyperparameters ────────────────────────────────────────────────
 BLEND_LAMBDA   = 0.35   # chain weight in blend:  p = λ·p_chain + (1-λ)·p_marginal
 DROPOUT_RATE   = 0.08   # diversity dropout: flip "present" → "absent" with this prob
@@ -91,7 +89,7 @@ class MaterialOccurrenceModel:
         entropy = -p * np.log(p) - (1 - p) * np.log(1 - p)
         self.chain_order_ = list(np.argsort(-entropy))
         cal_method = "sigmoid"
-        ctx = []   # list of (N,) float arrays — observed labels so far
+        ctx = []
         for m in self.chain_order_:
             material = Y_COLS[m]
             obs = y_presence[:, m]
@@ -111,7 +109,7 @@ class MaterialOccurrenceModel:
         """Marginal probabilities via greedy chain (Platt-calibrated)."""
         n = X.shape[0]
         proba = np.zeros((n, len(Y_COLS)), dtype=np.float64)
-        ctx = []   # list of (n,) float arrays — hard predictions so far
+        ctx = []
         for m in self.chain_order_:
             material = Y_COLS[m]
             if self.models_.get(material) is None:
@@ -134,7 +132,7 @@ class MaterialOccurrenceModel:
         """
         n         = X.shape[0]
         proba     = np.zeros((n, len(Y_COLS)))
-        ctx_built = {}   # m (material index) -> (n,) hard-predicted float labels
+        ctx_built = {}
 
         for k in range(len(Y_COLS)):
             m        = perm[k]
@@ -202,8 +200,6 @@ class MaterialOccurrenceModel:
             Xi = X[i:i+1]
 
             # ── Order-averaged marginal (blend anchor) ─────────────────────────
-            # Average predict_proba over n_chain_orders orderings to remove the
-            # fixed-order suppression/amplification that biases the blend anchor.
             p_avg = self.predict_proba(Xi)[0].copy()   # (M,) training order
             for _ in range(n_chain_orders - 1):
                 perm  = rng.permutation(M)
@@ -222,15 +218,13 @@ class MaterialOccurrenceModel:
                 X_rep = np.tile(Xi, (n_g, 1))
                 perm  = rng.permutation(M)        # random order for this group
                 pres_g    = np.zeros((n_g, M), dtype=bool)
-                ctx_built = {}                    # m -> (n_g,) sampled float labels
+                ctx_built = {}
 
                 for k in range(M):
                     m        = perm[k]
                     material = Y_COLS[m]
                     t        = train_pos[m]       # expected context columns
 
-                    # "Available context": training-order priors, zeros if not yet
-                    # sampled in this group's random order.
                     ctx = [
                         ctx_built.get(self.chain_order_[j], np.zeros(n_g))
                         for j in range(t)
@@ -506,9 +500,6 @@ class JointDistributionModel:
         return shrunk + np.eye(len(Y_COLS)) * self.reg_eps
 
     def fit(self, X_proc, X_raw, y_raw, y_presence, intensity_model):
-        # Pairwise-eligible rows: at least 2 materials present.
-        # Replaces the old all-present complete-case filter so smaller groups
-        # (S, W) are no longer starved of residual rows.
         usable = y_presence.sum(axis=1) >= 2
         if usable.sum() < len(Y_COLS):
             raise ValueError(f"Need >= {len(Y_COLS)} pairwise-usable rows; got {usable.sum()}.")
@@ -612,7 +603,6 @@ class TwoStageConditionalModel:
         )
 
     def fit(self, X_proc, X_raw, y_raw, y_mask):
-        # y_presence: reported AND positive — the true "material exists" signal
         y_presence = y_mask & (y_raw > 0)
         self.stage1.fit(X_proc, y_presence)
         self.stage2.fit(X_proc, y_raw, y_presence)
@@ -707,16 +697,11 @@ class TwoStageConditionalModel:
         n_rows = X_proc.shape[0]
         M      = len(Y_COLS)
 
-        # Stage 1: chain-sampled presence — preserves conditional co-occurrence structure
         all_presence = self.stage1.sample_presence(
             X_proc, n_samples=n_samples, temperature=temperature, random_state=rng,
             primary_codes=groups,
         )                                                            # (n_rows, n_samples, M)
 
-        # Post-hoc: align per-row sampled frequencies to Stage 1 predict_proba() marginals.
-        # The isotonic calibrator corrects global bias; this step closes any residual
-        # per-row gap (e.g. high-variance groups like Group C) by flipping the minimum
-        # number of samples needed to match the Platt-calibrated marginal probability.
         p_target = self.stage1.predict_proba(X_proc)               # (n_rows, M)
         self._marginal_resample(all_presence, p_target, rng)
 
@@ -739,7 +724,6 @@ class TwoStageConditionalModel:
                     if qxgb is None:
                         continue
 
-                    # Stage 2: sample from quantile-inferred N(mu, sigma²)
                     pq_log = qxgb.predict_q_log(Xi)                 # (1, 3)
                     mu     = float(pq_log[0, 1])
                     sigma  = max(float(pq_log[0, 2] - pq_log[0, 0]) / (2 * Z_QUANT_95), 1e-6)
@@ -1038,12 +1022,10 @@ class TwoStageConditionalModel:
         results = {}
 
         for m, mat in enumerate(Y_COLS):
-            # ── Presence frequency error ───────────────────────────────────────
             samp_freq = float(presence[:, :, m].mean())
             true_freq = float(y_ref_mask[:, m].mean())
             pres_err  = abs(samp_freq - true_freq)
 
-            # ── Intensity distributions (log-space, presence rows only) ───────
             samp_vals = samples[:, :, m][presence[:, :, m]]   # flattened
             ref_rows  = y_ref_mask[:, m]
             ref_vals  = y_ref[ref_rows, m]
