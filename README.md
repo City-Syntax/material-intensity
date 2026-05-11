@@ -1,12 +1,17 @@
 # Material Intensity Predictor
 
-This repository uses a **TwoStageConditionalModel** pipeline to predict building material intensities (kg/m²):
+This repository implements a **TwoStageConditionalModel** to estimate building material intensity (kg/m²) with both occurrence probabilities and uncertainty-aware intensity ranges. The framework is designed to balance predictive performance with interpretability for applied urban material stock analysis.
 
-1. **Stage 1** — per-material classifier-chain `XGBClassifier`, wrapped with `CalibratedClassifierCV(method="sigmoid")` for `p_presence`.
-2. **Stage 2** — per-material `XGBRegressor(objective="reg:quantileerror")` in log-space at quantiles `[0.05, 0.50, 0.95]`.
-  - Directly predicts `p5`, `p50`, `p95` after inverse-log transform
-  - Supports arbitrary quantiles through Gaussian approximation inferred from `p05/p95` spread
-3. **Joint layer** (`JointDistributionModel`) — group-wise multivariate normal on log-residuals, grouped by **Primary Code**. Retained for residual inspection and correlation analysis; no longer drives `predict()` output.
+The model consists of three components:
+
+1. **Stage 1: Material occurrence modeling**  
+  A classifier chain of per-material `XGBClassifier` models estimates material presence probability (`p_presence`). Each classifier is probability-calibrated using `CalibratedClassifierCV(method="sigmoid")`, improving reliability of predicted occurrence rates.
+
+2. **Stage 2: Conditional intensity modeling**  
+  For each material, an `XGBRegressor` with `objective="reg:quantileerror"` is trained in log-space at quantiles `[0.05, 0.50, 0.95]`. After inverse transformation, the model returns `p5`, `p50`, and `p95` in the original kg/m² scale. Additional quantiles can be approximated from the `p05/p95` spread under a Gaussian assumption.
+
+3. **Joint residual layer (diagnostic use)**  
+  `JointDistributionModel` fits group-wise multivariate normal structure to log-residuals by **Primary Code**. This layer is retained for residual diagnostics and correlation inspection, but it does not determine the default `predict()` outputs.
 
 ## Current Artifacts
 
