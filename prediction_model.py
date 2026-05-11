@@ -60,9 +60,9 @@ def prepare_data(
     for df_ in [X_train, X_val, X_test, y_train_df, y_val_df, y_test_df]:
         df_.reset_index(drop=True, inplace=True)
 
-    y_train_raw = y_train_df.to_numpy(dtype=np.float64)
-    y_val_raw = y_val_df.to_numpy(dtype=np.float64)
-    y_test_raw = y_test_df.to_numpy(dtype=np.float64)
+    y_train_raw = y_train_df.to_numpy(dtype=np.float64).copy()
+    y_val_raw = y_val_df.to_numpy(dtype=np.float64).copy()
+    y_test_raw = y_test_df.to_numpy(dtype=np.float64).copy()
 
     # Upper-quantile clipping computed on training data, applied to all splits
     clip_bounds = None

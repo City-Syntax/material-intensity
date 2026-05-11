@@ -11,14 +11,6 @@ GROUP_COLS = ["Primary Code"]
 
 # Dominant structural material per Primary Code → minimum presence probability during sampling.
 # Applied after isotonic calibration, before the final probability clip.
-STRUCTURAL_PRIOR = {
-    "B": {"Brick":    0.7},
-    "C": {"Concrete": 0.7},
-    "S": {"Steel":    0.7},
-    "W": {"Wood":     0.7},
-    # "T" (Traditional): no single dominant material — omitted
-}
-
 # ── Sampling hyperparameters ────────────────────────────────────────────────
 BLEND_LAMBDA   = 0.35   # chain weight in blend:  p = λ·p_chain + (1-λ)·p_marginal
 DROPOUT_RATE   = 0.08   # diversity dropout: flip "present" → "absent" with this prob
@@ -74,7 +66,8 @@ class MaterialOccurrenceModel:
         self.models_ = {}
         self.trivial_proba_ = {}
         self.chain_order_ = list(range(len(Y_COLS)))
-        self.presence_calibrators_ = {}   # set by TwoStageConditionalModel.calibrate_sampling()
+        self.presence_calibrators_ = {}         # global: material → IsotonicRegression
+        self.presence_group_calibrators_ = {}   # group-specific: (material, group) → IsotonicRegression
 
     @staticmethod
     def _chain_X(X, ctx_cols):
@@ -176,6 +169,8 @@ class MaterialOccurrenceModel:
           • Residual-chain blend:  p = λ·p_chain + (1-λ)·p_marginal_avg  (λ=0.35)
           • Probability clip:      p = clip(p, 0.05, 0.95)
           • Diversity dropout:     flip "present" → "absent" with prob 0.08
+          • Calibration: applies group-specific IsotonicRegression if fitted for
+            (material, group), else falls back to the global calibrator.
 
         Parameters
         ----------
@@ -185,6 +180,9 @@ class MaterialOccurrenceModel:
         random_state   : int, Generator, or None
         n_chain_orders : int  random orderings to average for the marginal anchor
                          and to partition sample groups (default 4)
+        primary_codes  : array-like (n_rows,) or None
+                         group label per row; enables group-specific calibration
+                         when presence_group_calibrators_ has been fitted
 
         Returns
         -------
@@ -252,14 +250,14 @@ class MaterialOccurrenceModel:
                         p_base = np.full(n_g, float(p_marginal[m]))
                         p_m    = BLEND_LAMBDA * p_chain + (1.0 - BLEND_LAMBDA) * p_base
 
-                    if self.presence_calibrators_.get(material) is not None:
-                        p_m = self.presence_calibrators_[material].predict(p_m).clip(0.0, 1.0)
-
-                    # Structural prior floor: primary structural material cannot collapse
-                    if primary_codes is not None:
-                        floor = STRUCTURAL_PRIOR.get(primary_codes[i], {}).get(material, 0.0)
-                        if floor > 0.0:
-                            p_m = np.maximum(p_m, floor)
+                    # Prefer group-specific calibrator; fall back to global
+                    grp = primary_codes[i] if primary_codes is not None else None
+                    cal = (self.presence_group_calibrators_.get((material, grp))
+                           if grp is not None else None)
+                    if cal is None:
+                        cal = self.presence_calibrators_.get(material)
+                    if cal is not None:
+                        p_m = cal.predict(p_m).clip(0.0, 1.0)
 
                     p_m = np.clip(p_m, P_CLIP_LO, P_CLIP_HI)
                     z   = rng.random(n_g) < p_m
@@ -273,59 +271,6 @@ class MaterialOccurrenceModel:
             out[i] = pres
 
         return out
-
-    def evaluate_calibration(self, X, y_presence, n_bins=10):
-        """Reliability diagnostics for Stage 1 presence probabilities.
-
-        Uses predict_proba output (Platt-calibrated via CalibratedClassifierCV)
-        to compute per-material metrics and reliability curve data.
-
-        Parameters
-        ----------
-        X          : np.ndarray (n_rows, n_features)
-        y_presence : np.ndarray (n_rows, n_materials) bool  true presence
-        n_bins     : int  probability bins for reliability curve (default 10)
-
-        Returns
-        -------
-        dict[material -> dict] keys: mean_pred_bins, frac_pos_bins,
-            brier, pred_mean, obs_freq
-        """
-        proba = self.predict_proba(X)
-        print(f"  {'Material':<12}  {'Brier':>8}  {'Mean pred':>10}  "
-              f"{'Obs freq':>10}  {'Bias':>8}")
-        print("  " + "-" * 62)
-
-        results = {}
-        for m, material in enumerate(Y_COLS):
-            y_true   = y_presence[:, m].astype(float)
-            p_pred   = proba[:, m]
-
-            brier    = float(np.mean((p_pred - y_true) ** 2))
-            pred_mu  = float(p_pred.mean())
-            obs_freq = float(y_true.mean())
-            bias     = pred_mu - obs_freq
-
-            bins = np.linspace(0.0, 1.0, n_bins + 1)
-            mp_bins, fp_bins = [], []
-            for lo, hi in zip(bins[:-1], bins[1:]):
-                mask = (p_pred >= lo) & (p_pred < hi)
-                if mask.sum() > 0:
-                    mp_bins.append(float(p_pred[mask].mean()))
-                    fp_bins.append(float(y_true[mask].mean()))
-
-            print(
-                f"  {material:<12}  {brier:>8.4f}  {pred_mu:>9.3f}   "
-                f"  {obs_freq:>9.3f}  {bias:>+8.3f}"
-            )
-            results[material] = dict(
-                mean_pred_bins = np.array(mp_bins),
-                frac_pos_bins  = np.array(fp_bins),
-                brier          = brier,
-                pred_mean      = pred_mu,
-                obs_freq       = obs_freq,
-            )
-        return results
 
 
 class _PerMaterialQuantileXGB:
@@ -630,24 +575,6 @@ class JointDistributionModel:
     def get_cov(self, group):
         return self.group_covs_.get(group, self.global_cov_)
 
-    def predict_intervals(self, X_proc, groups, intensity_model, alpha=0.10):
-        z = stats.norm.ppf(1.0 - alpha / 2.0)
-        mu_log = intensity_model.predict_log(X_proc)
-        unique_groups = np.unique(groups)
-        sigma_cache = {g: np.sqrt(np.diag(self.get_cov(g))) for g in unique_groups}
-        sigma = np.stack([sigma_cache[g] for g in groups])
-
-        lo_log = mu_log - z * sigma
-        hi_log = mu_log + z * sigma
-        p_lo = np.maximum(np.exp(lo_log) - LOG_EPS, 0.0)
-        p50 = np.maximum(np.exp(mu_log) - LOG_EPS, 0.0)
-        p_hi = np.maximum(np.exp(hi_log) - LOG_EPS, 0.0)
-
-        return {
-            mat: {"p5": p_lo[:, m], "p50": p50[:, m], "p95": p_hi[:, m]}
-            for m, mat in enumerate(Y_COLS)
-        }
-
 
 class TwoStageConditionalModel:
     def __init__(
@@ -714,6 +641,33 @@ class TwoStageConditionalModel:
             intervals[mat]["p_presence"] = proba[:, m]
         return intervals
 
+    @staticmethod
+    def _marginal_resample(presence, p_target, rng):
+        """Align per-row sampled frequencies to Stage 1 predict_proba() marginals.
+
+        For each row i and material m, computes the gap between the sampled
+        frequency and p_target[i, m], then randomly flips the minimum number
+        of samples to close it.  Operates in-place on presence.
+
+        Over-sampled  (freq > target): flip excess present → absent.
+        Under-sampled (freq < target): flip deficit absent → present.
+        """
+        p_target = np.clip(p_target, P_CLIP_LO, P_CLIP_HI)
+        n_rows, n_samples, M = presence.shape
+        for i in range(n_rows):
+            for m in range(M):
+                freq  = float(presence[i, :, m].mean())
+                delta = int(round((freq - float(p_target[i, m])) * n_samples))
+                if delta > 0:
+                    on_idx = np.where(presence[i, :, m])[0]
+                    flip   = rng.choice(on_idx, size=min(delta, len(on_idx)), replace=False)
+                    presence[i, flip, m] = False
+                elif delta < 0:
+                    off_idx = np.where(~presence[i, :, m])[0]
+                    flip    = rng.choice(off_idx, size=min(-delta, len(off_idx)), replace=False)
+                    presence[i, flip, m] = True
+        return presence
+
     def sample_query(
         self,
         X_proc,
@@ -758,6 +712,13 @@ class TwoStageConditionalModel:
             X_proc, n_samples=n_samples, temperature=temperature, random_state=rng,
             primary_codes=groups,
         )                                                            # (n_rows, n_samples, M)
+
+        # Post-hoc: align per-row sampled frequencies to Stage 1 predict_proba() marginals.
+        # The isotonic calibrator corrects global bias; this step closes any residual
+        # per-row gap (e.g. high-variance groups like Group C) by flipping the minimum
+        # number of samples needed to match the Platt-calibrated marginal probability.
+        p_target = self.stage1.predict_proba(X_proc)               # (n_rows, M)
+        self._marginal_resample(all_presence, p_target, rng)
 
         all_samples = np.zeros((n_rows, n_samples, M), dtype=np.float64)
 
@@ -826,33 +787,33 @@ class TwoStageConditionalModel:
         self,
         X_val,
         y_val_presence,
+        groups_val=None,
         n_samples=2000,
         temperature=2.5,
         random_state=SEED,
+        min_group_size=15,
     ):
         """Post-hoc calibration of joint sampling thresholds.
 
-        Fits one IsotonicRegression per material that maps the empirical
-        per-row sampled presence frequency (after full chain coupling and
-        temperature scaling) to the true binary presence on held-out
-        validation data.  Calibrators are stored in
-        stage1.presence_calibrators_ and applied automatically inside
-        sample_presence() at inference time.
-
-        The calibration target is the joint-sampled frequency, NOT the
-        raw Stage 1 classifier probability, so it corrects for the
-        over-saturation introduced by chain dependency coupling.
+        Fits one global IsotonicRegression per material (maps empirical
+        per-row sampled frequency → true binary presence), plus optional
+        group-specific calibrators when groups_val is provided.  Group
+        calibrators override the global one for their group, correcting
+        systematic over/under-sampling that the global fit averages away.
 
         Parameters
         ----------
         X_val          : np.ndarray (n_val, n_features)  preprocessed
         y_val_presence : np.ndarray (n_val, M) bool
                          true presence = observed AND positive
-                         (same mask used in fit())
-        n_samples      : int   draws per val row; more → stable frequency
-                         estimates (default 2000)
+        groups_val     : array-like (n_val,) or None
+                         group keys from build_group_keys(); when provided,
+                         fits per-(material, group) calibrators for groups
+                         with >= min_group_size validation rows
+        n_samples      : int   draws per val row (default 2000)
         temperature    : float same value used in sample_query()
         random_state   : int or None
+        min_group_size : int   minimum val rows to fit a group calibrator
 
         Returns
         -------
@@ -867,12 +828,48 @@ class TwoStageConditionalModel:
 
         sampled_freq = all_pres.mean(axis=1)   # (n_val, M) — per-row empirical rate
 
+        # ── Global calibrators (fallback for all rows) ─────────────────────────
         for m, material in enumerate(Y_COLS):
-            x_cal = sampled_freq[:, m]                    # (n_val,)
-            y_cal = y_val_presence[:, m].astype(float)    # (n_val,) 0/1
+            x_cal = sampled_freq[:, m]
+            y_cal = y_val_presence[:, m].astype(float)
             iso = IsotonicRegression(out_of_bounds="clip")
             iso.fit(x_cal, y_cal)
             self.stage1.presence_calibrators_[material] = iso
+
+        # ── Group-specific calibrators ─────────────────────────────────────────
+        # Fit only for groups with enough validation rows; the global calibrator
+        # already handles groups that fall below min_group_size.
+        self.stage1.presence_group_calibrators_ = {}
+        if groups_val is not None:
+            groups_val = np.asarray(groups_val)
+            print(f"\n  Group-specific calibrators  (min_group_size={min_group_size}):")
+            print(f"  {'Group':<10}  {'Rows':>6}  " +
+                  "  ".join(f"{mat[:5]:>5}" for mat in Y_COLS))
+            print("  " + "-" * (20 + 8 * len(Y_COLS)))
+            for g in np.unique(groups_val):
+                g_mask = groups_val == g
+                n_g = int(g_mask.sum())
+                if n_g < min_group_size:
+                    print(f"  {g:<10}  {n_g:>6}  (skipped — too few rows)")
+                    continue
+                row_parts = []
+                for m, material in enumerate(Y_COLS):
+                    x_g = sampled_freq[g_mask, m]
+                    y_g = y_val_presence[g_mask, m].astype(float)
+                    # Need both classes to fit; skip otherwise
+                    if y_g.sum() < 2 or (1 - y_g).sum() < 2:
+                        row_parts.append("  skip")
+                        continue
+                    iso_g = IsotonicRegression(out_of_bounds="clip")
+                    iso_g.fit(x_g, y_g)
+                    self.stage1.presence_group_calibrators_[(material, g)] = iso_g
+                    true_f  = float(y_g.mean())
+                    samp_f  = float(x_g.mean())
+                    row_parts.append(f"{true_f:.2f}")
+                print(f"  {g:<10}  {n_g:>6}  " + "  ".join(f"{p:>5}" for p in row_parts))
+            n_fitted = len(self.stage1.presence_group_calibrators_)
+            print(f"\n  Fitted {n_fitted} group calibrators "
+                  f"across {len(np.unique(groups_val))} groups.")
 
         return self
 
