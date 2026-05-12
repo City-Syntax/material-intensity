@@ -8,6 +8,7 @@ venv/
 
 # Jupyter
 .ipynb_checkpoints/
+.history/
 
 # OS
 .DS_Store
