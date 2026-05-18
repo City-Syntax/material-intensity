@@ -3,7 +3,7 @@ from pathlib import Path
 import joblib
 import pandas as pd
 import streamlit as st
-from two_stage_model import Y_COLS, build_group_keys
+from two_stage_model import Y_COLS
 
 st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
 
@@ -100,8 +100,7 @@ if st.button("Predict Material Intensity", type="primary"):
     )
 
     x_proc = preprocessor.transform(input_df)
-    groups = build_group_keys(input_df)
-    predictions = model.predict(x_proc, groups, alpha=0.10)
+    predictions = model.query(x_proc)
 
     st.subheader("Predicted Material Intensities (kg/m2)")
     cols = st.columns(len(Y_COLS))
@@ -110,9 +109,8 @@ if st.button("Predict Material Intensity", type="primary"):
         with col:
             p = predictions[material]
             st.markdown(f"### {material}")
-            st.metric("5th percentile", f"{float(p['p5'][0]):.2f}")
+            st.metric("5th percentile", f"{float(p['p05'][0]):.2f}")
             st.metric("Median", f"{float(p['p50'][0]):.2f}")
             st.metric("95th percentile", f"{float(p['p95'][0]):.2f}")
-            st.metric("Presence probability", f"{float(p['p_presence'][0]):.2f}")
 else:
     st.caption("Set inputs in sidebar and click Predict.")

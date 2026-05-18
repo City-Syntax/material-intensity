@@ -1,11 +1,10 @@
 # Material Intensity Predictor Web App
 
-This web app serves predictions from the current **TwoStageConditionalModel** pipeline.
+This web app serves predictions from the current **FinalQueryModel** pipeline.
 
 Model internals:
-- Stage 1: classifier-chain `XGBClassifier` per material with Platt calibration (`CalibratedClassifierCV`) → `p_presence`
-- Stage 2: per-material `XGBRegressor` quantile regression (`reg:quantileerror`) in log-space → `p5`, `p50`, `p95`
-- Joint layer: group-specific multivariate normal on log-residuals (Primary Code groups) — used for residual inspection, not for `predict()` intervals
+- Stage 1 (`ObservationModel`): independent `XGBClassifier` per material with Platt calibration (`CalibratedClassifierCV`) → `p_recorded`
+- Stage 2 (`IntensityModel`): per-material `XGBRegressor` quantile regression (`reg:quantileerror`) in log1p-space, with split-conformal calibration on the validation set → `p05`, `p50`, `p95`
 
 ## Quick Start
 
@@ -23,12 +22,13 @@ The app loads:
 Model classes are defined in `two_stage_model.py` and must be present for `joblib.load` to work correctly.
 
 Predictions include, for each material:
-- `p5` — 5th percentile (kg/m²)
+- `p_recorded` — probability the material intensity is recorded in the database
+- `p05` — 5th percentile, conformally calibrated (kg/m²)
 - `p50` — median / point estimate (kg/m²)
-- `p95` — 95th percentile (kg/m²)
-- `p_presence` — probability the material appears in the building
+- `p95` — 95th percentile, conformally calibrated (kg/m²)
+- `expected_reported` — `p_recorded × p50` (expected reported intensity, kg/m²)
 
-Prediction intervals (`p5`, `p95`) are produced by Stage 2 quantile regressors. The joint layer (Primary Code-grouped multivariate normal) is retained in the model object for residual inspection and sampling realism checks, but does not drive app output.
+Prediction intervals (`p05`, `p95`) are produced by Stage 2 quantile regressors and post-hoc expanded by per-material conformal offsets estimated on the held-out validation set to target 90% nominal coverage.
 
 ## Input Fields
 
@@ -49,3 +49,15 @@ Prediction intervals (`p5`, `p95`) are produced by Stage 2 quantile regressors. 
 
 - If port `8501` is occupied: `streamlit run Material_Intensity_Predictor.py --server.port 8502`
 - Confirm `preprocessor.joblib`, `model.joblib`, and `two_stage_model.py` all exist in the project root.
+
+## Inference API
+
+```python
+import joblib
+model = joblib.load("model.joblib")
+pre   = joblib.load("preprocessor.joblib")
+X_proc = pre.transform(X_raw[X_cols])
+result = model.query(X_proc)
+# result[material] keys: p_recorded, p05, p50, p95, expected_reported,
+#                        n_observed_train, coverage_warning
+```
