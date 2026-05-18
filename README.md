@@ -1,6 +1,6 @@
 # Material Intensity Predictor
 
-This repository implements a **TwoStageConditionalModel** for building material-intensity prediction in kg/m². The current pipeline combines calibrated material-occurrence prediction, conditional quantile regression for positive intensities, and a diagnostic joint residual layer used for correlation inspection and sampling realism checks.
+This repository implements a **ThreeStageConditionalModel** for building material-intensity prediction in kg/m². The current pipeline combines calibrated material-occurrence prediction, conditional quantile regression for positive intensities, and a diagnostic joint residual layer used for correlation inspection and sampling realism checks.
 
 The current notebook and script implement three main components:
 
