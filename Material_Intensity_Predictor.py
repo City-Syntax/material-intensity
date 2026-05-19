@@ -80,7 +80,7 @@ def _register_pickle_compat_classes():
             low_obs = getattr(self, "LOW_OBS_THRESHOLD", None)
             if low_obs is None:
                 low_obs = getattr(self, "low_obs_threshold", DEFAULT_LOW_OBS_THRESHOLD)
-            n_support_map = getattr(self, "n_support_", {}) or {}
+            n_support_map = getattr(self, "n_support_", None) or getattr(self, "n_observed_train_", {}) or {}
 
             result = {}
             for m, mat in enumerate(y_cols):
@@ -140,9 +140,14 @@ def _load_material_columns(model):
     return DEFAULT_Y_COLS
 
 
+# Register shim classes at module load time so they are always present before
+# joblib.load() runs, even when @st.cache_resource skips the function body.
+_register_pickle_compat_classes()
+
+
 @st.cache_resource
 def load_artifacts():
-    _register_pickle_compat_classes()
+    _register_pickle_compat_classes()  # re-register in case cache was cleared
     preprocessor = joblib.load(ARTIFACT_DIR / "preprocessor.joblib")
     model = joblib.load(ARTIFACT_DIR / "model.joblib")
     y_cols = _load_material_columns(model)
@@ -164,7 +169,7 @@ def _normalize_predictions(raw_predictions, n_rows, y_cols):
             mat_pred = raw_predictions.get(material, {})
 
             p05 = _as_1d_array(
-                mat_pred.get("conditional_p05", mat_pred.get("p5", np.zeros(n_rows)))
+                mat_pred.get("conditional_p05", mat_pred.get("p05", mat_pred.get("p5", np.zeros(n_rows))))
             )
             p50 = _as_1d_array(
                 mat_pred.get("conditional_p50", mat_pred.get("p50", np.zeros(n_rows)))
@@ -177,16 +182,16 @@ def _normalize_predictions(raw_predictions, n_rows, y_cols):
             )
 
             support_score_present = "support_score" in mat_pred
-            n_support_present = "n_support" in mat_pred
-            support_warning_present = "support_warning" in mat_pred
+            n_support_present = "n_support" in mat_pred or "n_observed_train" in mat_pred
+            support_warning_present = "support_warning" in mat_pred or "coverage_warning" in mat_pred
 
-            n_support = mat_pred.get("n_support", 0)
+            n_support = mat_pred.get("n_support", mat_pred.get("n_observed_train", 0))
             n_support = int(np.asarray(n_support).reshape(-1)[0])
 
             support_score = mat_pred.get("support_score", 0.0)
             support_score = float(np.asarray(support_score).reshape(-1)[0])
 
-            support_warning = mat_pred.get("support_warning", False)
+            support_warning = mat_pred.get("support_warning", mat_pred.get("coverage_warning", False))
             support_warning = bool(np.asarray(support_warning).reshape(-1)[0])
 
             # If diagnostics are absent (e.g., older model API), avoid misleading
