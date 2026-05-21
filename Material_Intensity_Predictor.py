@@ -186,7 +186,14 @@ if st.button("Predict Material Intensity", type="primary"):
         ]
     )
 
-    x_proc = preprocessor.transform(input_df)
+    try:
+        x_proc = preprocessor.transform(input_df)
+    except ValueError as e:
+        expected = [name for trans in preprocessor.transformers for name in (trans[2] if isinstance(trans[2], list) else [trans[2]])]
+        st.error(f"Preprocessor error: {e}")
+        st.write("Input columns:", list(input_df.columns))
+        st.write("Preprocessor expects:", expected)
+        st.stop()
     try:
         predictions = query_model_predictions(model, x_proc, input_df)
     except Exception as exc:
