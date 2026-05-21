@@ -2,6 +2,8 @@
 
 This web app serves predictions from the current **FinalQueryModel** pipeline.
 
+Web Link: https://predictmi.streamlit.app/
+
 Model internals:
 - Stage 1 (`ObservationModel`): independent `XGBClassifier` per material with Platt calibration (`CalibratedClassifierCV`) → `p_recorded`
 - Stage 2 (`IntensityModel`): per-material `XGBRegressor` quantile regression (`reg:quantileerror`) in log1p-space, with inverse-propensity sample weighting from Stage 1 and split-conformal calibration on the validation set → `p05`, `p50`, `p95`
