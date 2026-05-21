@@ -204,16 +204,12 @@ if st.button("Predict Material Intensity", type="primary"):
         with col:
             p = predictions[material]
             st.markdown(f"### {material}")
-            st.metric("p_recorded", f"{float(p['p_recorded'][0]):.2f}")
             p05 = float(p["p05"][0])
             p50 = float(p["p50"][0])
             p95 = float(p["p95"][0])
             render_percentile_bar(material, p05, p50, p95)
-            st.metric("Expected reported (kg/m²)", f"{float(p['expected_reported'][0]):.2f}")
-            n_obs = p["n_observed_train"]
-            if p["coverage_warning"]:
-                st.warning(f"Training records: {n_obs} — low data coverage")
-            else:
-                st.caption(f"Training records: {n_obs}")
+            mean_val = float(p["mean"][0]) if "mean" in p else p50
+            st.metric("Mean (kg/m²)", f"{mean_val:.2f}")
+            st.metric("p_recorded", f"{float(p['p_recorded'][0]):.2f}")
 else:
     st.caption("Set inputs in sidebar and click Predict.")
