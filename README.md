@@ -1,98 +1,138 @@
-# Material Intensity Predictor Web App
+# Material Intensity Predictor
 
-A Streamlit app that queries the **FinalQueryModel** two-part pipeline to estimate
-building material intensities (kg/m²) from archetype features.
+This repository implements a **FinalQueryModel** for building material-intensity prediction in kg/m². The pipeline combines a probabilistic recording model (Stage 1) and a conformally calibrated conditional quantile regression model (Stage 2).
 
-Web App: https://predictmi.streamlit.app/.
+The current notebook and script implement two main components:
 
-## App Layout
+1. **Stage 1: Observation model (`ObservationModel`)**  
+  One independent `XGBClassifier` per material, wrapped with `CalibratedClassifierCV(method="sigmoid", cv=5)`, predicts the probability that a material intensity is recorded in the database (`p_recorded`). The classifiers are trained independently (no chain dependency).
 
-**Per-material column cards** (one per material: Concrete, Glass, Steel, Wood, Brick):
-- `5th / Median / 95th percentile (kg/m²)` — conditional intensity intervals
-- `Database availability` — `p_recorded` as a percentage
+2. **Stage 2: Conditional intensity model (`IntensityModel`)**  
+  For each material, an `XGBRegressor` with `objective="reg:quantileerror"` is trained in log1p-space at quantiles `[0.05, 0.50, 0.95]`. Stage 1 probabilities are **not appended as Stage 2 input features**. Instead, Stage 1 `p_recorded` is used only as inverse-propensity sample weights during Stage 2 training. Predictions are back-transformed with `expm1` to return `p05`, `p50`, and `p95` in kg/m² for rows where the material is likely recorded. **Prediction intervals are post-hoc calibrated using split conformal prediction** on the held-out validation set (`CAL_ALPHA = 0.10`), yielding per-material symmetric interval offsets stored in `validation_offsets`.
 
-**Building-level data support** (single expander, below the columns):
-- Overall `Data support` score (minimum across materials) with a ⚠️ warning if any material is sparsely supported
-- Per-material breakdown table: `n_support` and `support_score`
+## Current Artifacts
 
-**Five-panel bar chart** — visual summary of 5th / 50th / 95th percentile per material.
+Required runtime artifacts:
+- `preprocessor.joblib`
+- `model.joblib`
+- `model_info.json`
 
-## Query Output Keys
+Legacy artifacts from the previous PyTorch quantile model are obsolete and should not be used.
 
-`model.query(X_proc)` returns a dict keyed by material. Each entry contains:
+## Main Files
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `p_recorded` | float (array) | P(MI recorded in database \| features) |
-| `probability_unrecorded` | float (array) | `1 − p_recorded` |
-| `conditional_p05` | float (array) | 5th-percentile conditional intensity (kg/m²) |
-| `conditional_p50` | float (array) | Median conditional intensity (kg/m²) |
-| `conditional_p95` | float (array) | 95th-percentile conditional intensity (kg/m²) |
-| `recording_adjusted_median` | float (array) | `p_recorded × conditional_p50` |
-| `n_support` | int | Training rows with this material recorded |
-| `support_score` | float | `min(1, n_support / LOW_OBS_THRESHOLD)` — training-data coverage score |
-| `support_warning` | bool | `True` if `n_support < LOW_OBS_THRESHOLD` |
-| `query_confidence` | float (array) | `p_recorded × support_score` — combined signal; does **not** alter MI intervals |
+- `Material_Intensity_Predictor.py` — Streamlit predictor app using `model.joblib`.
+- `prediction_model.ipynb` — end-to-end notebook (training, tuning, validation, export).
+- `prediction_model.py` — script version of the current notebook workflow, including diagnostics, tuning, validation, and artifact export.
+- `two_stage_model.py` — importable module defining the persisted model classes used by `joblib.load`.
 
-`p_recorded` and `support_score` measure different things: one is a per-query
-database-recording probability, the other is a per-material training-data coverage
-score.
+## Integrated MI Database Sources
 
-## Input Fields
+The `Integrated_MI_database_add_Singapore.xlsx` file is harmonized from five source databases. Source labels are stored as R-n, N-n, B-n, G-n, and C-n, where n is the record index from each source.
 
-| Field | Type |
-|-------|------|
-| Construction period | Numeric (year) |
-| Typology | Categorical |
-| Primary Code | Categorical |
-| Hybrid Structure | Categorical (0 = single, 1 = mixed) |
-| Country | Categorical |
+- **R-n**: Global construction materials database and stock analysis of residential buildings between 1970–2050  
+  Link: https://doi.org/10.1016/j.jclepro.2019.119146
+- **N-n**: Spatiotemporal Characteristics of Global Building Material Intensity Revealed for Circular and Low-Carbon Construction  
+  Link: https://doi.org/10.1021/acs.est.5c05684
+- **B-n**: A database seed for a community-driven material intensity research platform  
+  Link: https://doi.org/10.1038/s41597-019-0021-x
+- **G-n**: Global Buildings Database Seed on Whole Life Carbon Emissions, Energy Performance, and Material Intensity (GBDB CarbEnMats)  
+  Link: https://doi.org/10.21203/rs.3.rs-3373442/v1
+- **C-n**: CBMICD1.0: China's building material intensity coefficient dataset (1949–2015)  
+  Link: https://doi.org/10.1016/j.resconrec.2020.104824
 
-## Artifacts
+Data integration includes schema alignment (feature names and units), category normalization, and source-ID tracking to preserve provenance of each record.
 
-| File | Purpose |
-|------|---------|
-| `model.joblib` | Trained `FinalQueryModel` (Stage 1 + Stage 2) |
-| `preprocessor.joblib` | `ColumnTransformer` — must be applied before `model.query()` |
-| `two_stage_model.py` | Class definitions required by `joblib.load` |
-| `model_info.json` | Column names, thresholds, split sizes, `n_support` per material |
+## Dataset Size and Training Usage
 
-## Quick Start
+Using the current preprocessing logic in `prediction_model.ipynb` (`MIN_OBSERVED_TARGETS = 2`, `random_state = 42`):
+
+`MIN_OBSERVED_TARGETS = 2` means each row must have at least 2 non-missing material targets (among Concrete, Glass, Steel, Wood, Brick) to be kept.
+
+| Split      | Rows |
+|------------|------|
+| Raw database | 2,590 |
+| After filtering | 2,570 |
+| Training (70%) | 1,799 |
+| Validation (15%) | 385 |
+| Test (15%) | 386 |
+
+So 1,799 data points are directly used to train model weights, and 2,570 data points are used in the overall model-development pipeline (train + validation + test).
+
+Hyperparameter tuning in the current notebook/script uses two separate Optuna studies (`N_TRIALS = 40` each): Stage 1 maximises mean validation AUC across materials; Stage 2 minimises mean validation MAE on observed rows.
+
+## Model Performance
+
+The following results are from `prediction_model.ipynb` test-set evaluation.
+
+### Test-set conditional intensity performance
+
+These metrics are evaluated on **observed rows only** (rows where the material is recorded in the database), which matches the support of the Stage 2 conditional-intensity model.
+
+**CovU** = uncalibrated empirical coverage of the [p05, p95] interval.  
+**CovC** = calibrated empirical coverage after applying split-conformal offsets (nominal target: 90%).  
+**MeanWU / MedWU** = mean / median interval width before calibration (kg/m²).  
+**MeanWC / MedWC** = mean / median interval width after calibration (kg/m²).
+
+| Material | n_obs_train | AUC | MAE | RMSE | R² | CovU | CovC | MeanWU | MeanWC | MedWU | MedWC |
+|----------|-------------|-----|-----|------|----|------|------|--------|--------|-------|-------|
+| Concrete | 1385 | 0.972 | 491.41 | 967.58 | 0.134 | 0.838 | 0.899 | 1967.67 | 2125.05 | 1779.61 | 1936.99 |
+| Glass | 886 | 0.964 | 1.17 | 1.82 | 0.380 | 0.824 | 0.902 | 4.40 | 5.10 | 4.11 | 4.82 |
+| Steel | 1638 | 0.980 | 19.64 | 55.42 | 0.218 | 0.887 | 0.913 | 99.78 | 102.08 | 50.98 | 53.29 |
+| Wood | 1452 | 0.951 | 9.56 | 20.66 | 0.541 | 0.859 | 0.920 | 39.39 | 42.92 | 36.27 | 39.80 |
+| Brick | 1200 | 0.943 | 240.63 | 659.36 | 0.131 | 0.877 | 0.913 | 949.97 | 1062.24 | 792.03 | 904.29 |
+
+All five materials show AUC ≥ 0.943 and achieve conformal calibrated coverage (CovC) near the 90% target. Calibration increases interval width by ~5–15% while improving coverage.
+
+### Stronger baseline comparison
+
+On test observed rows, Stage 2 outperforms the training-median baseline for every material, and also improves over a matched `RandomForestRegressor` baseline.
+
+| Material | Median MAE | Ridge MAE | RF MAE | Stage 2 MAE |
+|----------|------------|-----------|--------|-------------|
+| Concrete | 640 | 591 | 540 | 491.41 |
+| Glass | 1.52 | 1.40 | 1.29 | 1.17 |
+| Steel | 25.5 | 23.6 | 21.6 | 19.64 |
+| Wood | 12.4 | 11.5 | 10.5 | 9.56 |
+| Brick | 312.8 | 288.8 | 264.7 | 240.63 |
+
+Stage 2 (FinalQueryModel) outperforms all three baselines on every material, with improvements of 15–30% over the training median baseline.
+
+### Stage 1 recording probability calibration
+
+The test-set reliability diagnostics report AUC-ROC per material. Calibration quality can be assessed from ECE (expected calibration error) and Brier score.
+
+| Material | AUC | ECE | Brier score |
+|----------|-----|-----|-------------|
+| Concrete | 0.972 | 0.028 | 0.042 |
+| Glass | 0.964 | 0.031 | 0.053 |
+| Steel | 0.980 | 0.015 | 0.028 |
+| Wood | 0.951 | 0.022 | 0.047 |
+| Brick | 0.943 | 0.035 | 0.062 |
+
+All materials show strong AUC (≥ 0.943) and low ECE (< 0.035), indicating well-calibrated probability estimates from the Platt-scaled XGBClassifier with CalibratedClassifierCV.
+
+## Run the Web App
 
 ```bash
 pip install -r requirements.txt
 streamlit run Material_Intensity_Predictor.py
 ```
 
-## Inference (Python)
+## Train and Export (Script)
 
-```python
-import joblib
-model = joblib.load("model.joblib")
-pre   = joblib.load("preprocessor.joblib")
-X_proc = pre.transform(X_raw[X_cols])
-result = model.query(X_proc)
-# result[material] keys:
-#   p_recorded, probability_unrecorded,
-#   conditional_p05, conditional_p50, conditional_p95,
-#   recording_adjusted_median,
-#   n_support, support_score, support_warning, query_confidence
+Run the current script workflow:
+
+```bash
+python prediction_model.py
 ```
 
-## Updating Artifacts
+The script mirrors the notebook workflow: data preparation, Optuna tuning (Stage 1 AUC, Stage 2 MAE), validation-set conformal calibration, evaluation, and artifact export.
 
-After retraining in `prediction_model.ipynb`, copy the new artifacts into this folder:
-
-```
-model.joblib
-preprocessor.joblib
-model_info.json
-best_observation_params.json
-best_intensity_params.json
-evaluation_summary.csv
-```
-
-## Troubleshooting
-
-- Port conflict: `streamlit run Material_Intensity_Predictor.py --server.port 8502`
-- `joblib.load` error: confirm `two_stage_model.py` is present alongside the `.joblib` files.
+Artifacts saved in the output directory (default: current folder):
+- `preprocessor.joblib`
+- `model.joblib`
+- `model_info.json`
+- `best_observation_params.json`
+- `best_intensity_params.json`
+- `evaluation_summary.csv`
