@@ -53,6 +53,85 @@ def infer_construction_period_bucket(year: int) -> str:
     return "post_2010"
 
 
+def query_model_predictions(model, x_proc, input_df):
+    n = x_proc.shape[0]
+
+    if hasattr(model, "query"):
+        return model.query(x_proc, X_raw=input_df)
+
+    obs_model = None
+    int_model = None
+    n_observed_map = {}
+
+    if hasattr(model, "tuned_observation_model"):
+        obs_model = model.tuned_observation_model
+    if hasattr(model, "tuned_intensity_model"):
+        int_model = model.tuned_intensity_model
+    if hasattr(model, "n_observed_train_"):
+        n_observed_map = model.n_observed_train_
+
+    if isinstance(model, dict):
+        obs_model = obs_model or model.get("tuned_observation_model") or model.get("observation_model")
+        int_model = int_model or model.get("tuned_intensity_model") or model.get("intensity_model")
+        n_observed_map = n_observed_map or model.get("n_observed_train", {})
+
+    if obs_model is not None and hasattr(obs_model, "predict_proba"):
+        p_recorded = obs_model.predict_proba(x_proc)
+    else:
+        p_recorded = None
+
+    if int_model is not None and hasattr(int_model, "predict_quantiles"):
+        intervals = int_model.predict_quantiles(x_proc)
+    elif hasattr(model, "predict_quantiles"):
+        intervals = model.predict_quantiles(x_proc)
+    elif hasattr(model, "predict"):
+        y_pred = model.predict(x_proc)
+        intervals = {}
+        for i, mat in enumerate(Y_COLS):
+            if getattr(y_pred, "ndim", 1) == 1:
+                p50 = y_pred.astype(float)
+            else:
+                p50 = y_pred[:, i].astype(float)
+            intervals[mat] = {"p05": p50.copy(), "p50": p50, "p95": p50.copy()}
+    else:
+        raise TypeError(
+            f"Loaded model type {type(model).__name__} has no supported inference method (query/predict_quantiles/predict)."
+        )
+
+    results = {}
+    for i, mat in enumerate(Y_COLS):
+        iv = intervals.get(mat, {})
+        p05 = iv.get("p05")
+        p50 = iv.get("p50")
+        p95 = iv.get("p95")
+
+        if p05 is None or p50 is None or p95 is None:
+            zeros = [0.0] * n
+            p05 = p05 if p05 is not None else zeros
+            p50 = p50 if p50 is not None else zeros
+            p95 = p95 if p95 is not None else zeros
+
+        if p_recorded is None:
+            p_rec = [float("nan")] * n
+            expected_reported = p50
+        else:
+            p_rec = p_recorded[:, i]
+            expected_reported = p_rec * p50
+
+        n_obs = int(n_observed_map.get(mat, 0)) if isinstance(n_observed_map, dict) else 0
+        results[mat] = {
+            "p_recorded": p_rec,
+            "p05": p05,
+            "p50": p50,
+            "p95": p95,
+            "expected_reported": expected_reported,
+            "n_observed_train": n_obs,
+            "coverage_warning": n_obs < 30,
+            "archetype_support_level": ["unknown"] * n,
+        }
+    return results
+
+
 @st.cache_resource
 def load_artifacts():
     preprocessor = joblib.load(ARTIFACT_DIR / "preprocessor.joblib")
@@ -160,7 +239,11 @@ if st.button("Predict Material Intensity", type="primary"):
     )
 
     x_proc = preprocessor.transform(input_df)
-    predictions = model.query(x_proc, X_raw=input_df)
+    try:
+        predictions = query_model_predictions(model, x_proc, input_df)
+    except Exception as exc:
+        st.error(f"Prediction failed for loaded model type {type(model).__name__}: {exc}")
+        st.stop()
 
     first_mat = Y_COLS[0]
     archetype_lvl = predictions[first_mat]["archetype_support_level"][0]
