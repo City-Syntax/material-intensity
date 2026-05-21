@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from prediction_model import y_cols as Y_COLS
 
-st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
+st.set_page_config(page_title="Material Intensity (MI) Predictor", layout="wide")
 
 ARTIFACT_DIR = Path(__file__).resolve().parent
 
@@ -100,13 +100,9 @@ TYPOLOGY_MAP = {
 
 PRIMARY_CODE_MAP = {
     "B": "Brick",
-    "BC": "Brick-Concrete",
-    "BW": "Brick-Wood",
-    "W": "Wood",
     "C": "Concrete",
-    "CW": "Concrete-Wood",
     "S": "Steel",
-    "SC": "Steel-Concrete",
+    "W": "Wood",
     "T": "Traditional material",
 }
 
@@ -131,10 +127,6 @@ try:
 except Exception as exc:
     st.error(f"Error loading artifacts: {exc}")
     st.stop()
-
-st.caption(
-    f"Loaded model: {type(model).__module__}.{type(model).__name__} from {model_path.name}"
-)
 
 with st.sidebar:
     st.header("Building Inputs")
@@ -204,7 +196,7 @@ if st.button("Predict Material Intensity", type="primary"):
     archetype_lvl = predictions[first_mat]["archetype_support_level"][0]
     st.info(f"Archetype support level: {archetype_lvl}")
 
-    st.subheader("Predicted Material Intensities (kg/m2)")
+    st.subheader("Predicted Material Intensities (kg/m²)")
     cols = st.columns(len(Y_COLS))
 
     for col, material in zip(cols, Y_COLS):
