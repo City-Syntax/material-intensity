@@ -57,7 +57,7 @@ def query_model_predictions(model, x_proc, input_df):
     if not hasattr(model, "query"):
         raise TypeError(
             f"Loaded model type {type(model).__name__} has no 'query' method. "
-            "Regenerate model.joblib by running prediction_model.py."
+            "Regenerate model.joblib by running prediction_model.ipynb."
         )
     return model.query(x_proc, X_raw=input_df)
 
