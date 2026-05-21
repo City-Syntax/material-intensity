@@ -198,7 +198,8 @@ if st.button("Predict Material Intensity", type="primary"):
 
     first_mat = Y_COLS[0]
     archetype_lvl = predictions[first_mat]["archetype_support_level"][0]
-    st.info(f"Archetype support level: {archetype_lvl}")
+    archetype_n = int(predictions[first_mat]["archetype_n_train"][0])
+    st.info(f"Archetype support level: {archetype_lvl} (n_train={archetype_n})")
 
     st.subheader("Predicted Material Intensities (kg/m²)")
     cols = st.columns(len(Y_COLS))
