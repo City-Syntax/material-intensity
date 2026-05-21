@@ -200,17 +200,6 @@ if st.button("Predict Material Intensity", type="primary"):
     first_mat = Y_COLS[0]
     archetype_lvl = predictions[first_mat]["archetype_support_level"][0]
     st.info(f"Archetype support level: {archetype_lvl}")
-    
-    # DEBUG: Show model output for first material
-    st.write("**DEBUG - Model prediction keys for first material:**")
-    st.write(list(predictions[first_mat].keys()))
-    st.write(f"**DEBUG - First material ({first_mat}) raw values:**")
-    for key in ["p05", "p50", "p95", "mean", "p_recorded"]:
-        if key in predictions[first_mat]:
-            val = predictions[first_mat][key][0]
-            st.write(f"  {key}: {val}")
-        else:
-            st.write(f"  {key}: NOT IN PREDICTIONS")
 
     st.subheader("Predicted Material Intensities (kg/m²)")
     cols = st.columns(len(Y_COLS))
