@@ -9,6 +9,10 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 .history/
+*.ipynb
+
+# Training data — never commit raw datasets
+*.xlsx
 
 # OS
 .DS_Store
