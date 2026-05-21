@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[37]:
+# In[63]:
 
 
 import os, random
@@ -97,7 +97,7 @@ plt.rcParams.update({
 })
 
 
-# In[38]:
+# In[64]:
 
 
 # ==========================================================
@@ -162,7 +162,7 @@ def prepare_data(
     )
 
 
-# In[39]:
+# In[65]:
 
 
 set_global_seed(SEED)
@@ -175,7 +175,7 @@ print(f"X_test:  {data['X_test_proc'].shape}  y_test:  {data['y_test_raw'].shape
 print(f"Rows kept: {data['kept_rows']}  (min observed targets: {data['min_observed_targets']})")
 
 
-# In[40]:
+# In[66]:
 
 
 # ==========================================================
@@ -268,7 +268,7 @@ print(f"Top 10 archetypes: {archetype_counts.iloc[0]} rows (max) down to {archet
 print(f"Median archetype: {int(archetype_counts.median())} rows")
 
 
-# In[41]:
+# In[67]:
 
 
 # ==========================================================
@@ -319,7 +319,7 @@ for level in ["high", "medium", "low", "very_low"]:
 # 
 # The main workflow uses raw observed material intensity values. Extreme values are retained because they are part of the reported database. Log transformation (log1p) is used to reduce skewness during model fitting.
 
-# In[42]:
+# In[68]:
 
 
 # ==========================================================
@@ -342,7 +342,7 @@ for m, mat in enumerate(y_cols):
           f"{n_v:>6}  {r_v:>7.1f}%  {n_te:>7}  {r_te:>8.1f}%")
 
 
-# In[43]:
+# In[69]:
 
 
 # ==========================================================
@@ -376,7 +376,7 @@ for m, mat in enumerate(y_cols):
           f"{n_above:>12}  {pct:>9.1f}%{flag}")
 
 
-# In[44]:
+# In[70]:
 
 
 # ==========================================================
@@ -441,7 +441,7 @@ class ObservationModel:
         return proba
 
 
-# In[45]:
+# In[71]:
 
 
 # ==========================================================
@@ -574,7 +574,7 @@ class IntensityModel:
         return result
 
 
-# In[46]:
+# In[72]:
 
 
 # ==========================================================
@@ -750,7 +750,7 @@ class FinalQueryModel:
         return result
 
 
-# In[47]:
+# In[73]:
 
 
 # ==========================================================
@@ -880,7 +880,7 @@ for mat, p in best_intensity_params_per_material.items():
     print(f"  {mat}: {p}")
 
 
-# In[48]:
+# In[74]:
 
 
 # ==========================================================
@@ -914,7 +914,7 @@ print(f"BLEND_MAX_ALPHA = {FinalQueryModel.BLEND_MAX_ALPHA}  "
       f"(applied when archetype_n >= {ARCHETYPE_HIGH_SUPPORT})")
 
 
-# In[49]:
+# In[75]:
 
 
 # ==========================================================
@@ -951,7 +951,7 @@ print("Stage 1 — Recording probability model  (test set)")
 print(pd.DataFrame(rows).to_string(index=False))
 
 
-# In[50]:
+# In[76]:
 
 
 # ==========================================================
@@ -980,7 +980,7 @@ for m, mat in enumerate(y_cols):
     print(f"{mat:<12}  {int(obs.sum()):>6}  {mae:>8.2f}  {rmse:>8.2f}  {r2:>8.3f}  {medae:>9.2f}")
 
 
-# In[51]:
+# In[77]:
 
 
 # ==========================================================
@@ -1029,7 +1029,7 @@ print(f"\nRows with blend weight > 0: "
       f"{int((np.array([_query_test[y_cols[0]]['archetype_n_train']]) > 0).sum())} / {len(data['X_test_proc'])}")
 
 
-# In[52]:
+# In[78]:
 
 
 # ==========================================================
@@ -1100,7 +1100,7 @@ for m, mat in enumerate(y_cols):
     print(f"{mat:<12}  {int(obs.sum()):>6}  {cov_u:>9.3f}  {cov_c:>9.3f}  {w_u.mean():>12.2f}  {w_c.mean():>10.2f}  {np.median(w_u):>12.2f}  {np.median(w_c):>10.2f}")
 
 
-# In[53]:
+# In[79]:
 
 
 # ==========================================================
@@ -1139,7 +1139,7 @@ for m, mat in enumerate(y_cols):
     print(f"{mat:<12}  {mae_s2:>12.2f}  {mae_med:>12.2f}  {mae_ridge:>10.2f}  {mae_rf:>8.2f}")
 
 
-# In[54]:
+# In[80]:
 
 
 # ==========================================================
@@ -1198,7 +1198,7 @@ def _val(mat, col):
     return float(v) if not pd.isna(v) else float("nan")
 
 
-# In[55]:
+# In[81]:
 
 
 # ==========================================================
@@ -1269,7 +1269,7 @@ if RUN_CLIP_SENSITIVITY:
 # recording uncertainty in Stage 1.
 # 
 
-# In[56]:
+# In[82]:
 
 
 # ==========================================================
@@ -1305,7 +1305,7 @@ plt.show()
 # those without. The dashed red line marks the random-classifier baseline (AUC = 0.5).
 # 
 
-# In[57]:
+# In[83]:
 
 
 # ==========================================================
@@ -1341,7 +1341,7 @@ plt.show()
 # conditional intensity estimates.
 # 
 
-# In[58]:
+# In[84]:
 
 
 # ==========================================================
@@ -1375,7 +1375,7 @@ plt.show()
 # one order of magnitude.
 # 
 
-# In[59]:
+# In[85]:
 
 
 # ==========================================================
@@ -1432,7 +1432,7 @@ plt.show()
 # suggests the intervals are too wide; under-coverage suggests they are too narrow.
 # 
 
-# In[60]:
+# In[86]:
 
 
 # ==========================================================
@@ -1479,7 +1479,7 @@ plt.show()
 # intensity, which is the recording probability multiplied by the conditional median.
 # 
 
-# In[61]:
+# In[87]:
 
 
 # ==========================================================
