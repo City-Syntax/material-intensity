@@ -14,7 +14,6 @@ with open(ARTIFACT_DIR / "model_info.json") as f:
     _model_info = json.load(f)
     Y_COLS = _model_info.get("y_cols", ["Concrete", "Glass", "Steel", "Wood", "Brick"])
 
-
 def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
     st.markdown(
         f"""
@@ -49,11 +48,11 @@ def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
 def infer_construction_period_bucket(year: int) -> str:
     if year < 1945:
         return "pre_1945"
-    if year <= 1980:
+    if year < 1980:
         return "1945_1980"
-    if year <= 2000:
+    if year < 2000:
         return "1980_2000"
-    if year <= 2010:
+    if year < 2010:
         return "2000_2010"
     return "post_2010"
 
@@ -212,8 +211,6 @@ if st.button("Predict Material Intensity", type="primary"):
             p50 = float(p["p50"][0])
             p95 = float(p["p95"][0])
             render_percentile_bar(material, p05, p50, p95)
-            mean_val = float(p["mean"][0]) if "mean" in p else p50
-            st.metric("Mean (kg/m²)", f"{mean_val:.2f}")
             st.metric("Database Reporting Probability", f"{float(p['p_recorded'][0]):.2f}")
 else:
     st.caption("Set inputs in sidebar and click Predict.")
