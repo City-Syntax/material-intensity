@@ -152,19 +152,19 @@ with st.sidebar:
     )
 
     typology = st.selectbox(
-        "Typology",
+        "Building Function",
         options=list(TYPOLOGY_MAP.keys()),
         format_func=lambda x: TYPOLOGY_MAP.get(x, x),
     )
 
     primary_code = st.selectbox(
-        "Primary Code",
+        "Structural System Type",
         options=list(PRIMARY_CODE_MAP.keys()),
         format_func=lambda x: PRIMARY_CODE_MAP.get(x, x),
     )
 
     hybrid_structure = st.selectbox(
-        "Hybrid Structure",
+        "Hybrid Structure or Not",
         options=list(HYBRID_STRUCTURE_MAP.keys()),
         format_func=lambda x: HYBRID_STRUCTURE_MAP.get(x, x),
     )
@@ -178,9 +178,9 @@ if st.button("Predict Material Intensity", type="primary"):
             {
                 "Construction period": construction_period,
                 "Construction period bucket": construction_period_bucket,
-                "Typology": typology,
-                "Primary Code": primary_code,
-                "Hybrid Structure": hybrid_structure,
+                "Building Function": typology,
+                "Structural System Type": primary_code,
+                "Hybrid Structure or Not": hybrid_structure,
                 "Country": country,
             }
         ]
@@ -210,6 +210,6 @@ if st.button("Predict Material Intensity", type="primary"):
             render_percentile_bar(material, p05, p50, p95)
             mean_val = float(p["mean"][0]) if "mean" in p else p50
             st.metric("Mean (kg/m²)", f"{mean_val:.2f}")
-            st.metric("p_recorded", f"{float(p['p_recorded'][0]):.2f}")
+            st.metric("Database Reporting Probability", f"{float(p['p_recorded'][0]):.2f}")
 else:
     st.caption("Set inputs in sidebar and click Predict.")
