@@ -65,8 +65,22 @@ def query_model_predictions(model, x_proc, input_df):
 @st.cache_resource
 def load_artifacts():
     preprocessor = joblib.load(ARTIFACT_DIR / "preprocessor.joblib")
-    model = joblib.load(ARTIFACT_DIR / "model.joblib")
-    return preprocessor, model
+    model_path_candidates = [
+        ARTIFACT_DIR / "model_finalquery.joblib",
+        ARTIFACT_DIR / "model.joblib",
+    ]
+    model = None
+    loaded_path = None
+    for p in model_path_candidates:
+        if p.exists():
+            model = joblib.load(p)
+            loaded_path = p
+            break
+    if model is None:
+        raise FileNotFoundError(
+            "No model artifact found. Expected one of: model_finalquery.joblib, model.joblib"
+        )
+    return preprocessor, model, loaded_path
 
 
 TYPOLOGY_MAP = {
@@ -113,10 +127,14 @@ st.title("Material Intensity Predictor")
 st.write("Estimate material intensity percentiles (5th, 50th, and 95th) for a building.")
 
 try:
-    preprocessor, model = load_artifacts()
+    preprocessor, model, model_path = load_artifacts()
 except Exception as exc:
     st.error(f"Error loading artifacts: {exc}")
     st.stop()
+
+st.caption(
+    f"Loaded model: {type(model).__module__}.{type(model).__name__} from {model_path.name}"
+)
 
 with st.sidebar:
     st.header("Building Inputs")
