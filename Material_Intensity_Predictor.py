@@ -179,8 +179,8 @@ if st.button("Predict Material Intensity", type="primary"):
                 "Construction period": construction_period,
                 "Construction period bucket": construction_period_bucket,
                 "Typology": typology,
-                "Structural System Type": primary_code,
-                "Hybrid Structure or Not": hybrid_structure,
+                "Primary Code": primary_code,
+                "Hybrid Structure": hybrid_structure,
                 "Country": country,
             }
         ]
