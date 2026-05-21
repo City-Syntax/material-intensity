@@ -66,6 +66,22 @@ def query_model_predictions(model, x_proc, input_df):
     )
 
 
+def format_model_result(predict_dict):
+    """Return the raw model fields for a single-row query."""
+    return {
+        "archetype_n_train": int(predict_dict["archetype_n_train"][0]),
+        "archetype_support_level": str(predict_dict["archetype_support_level"][0]),
+        "n_observed_train": int(predict_dict["n_observed_train"]),
+        "coverage_warning": bool(predict_dict["coverage_warning"]),
+        "p_recorded": float(predict_dict["p_recorded"][0]),
+        "p05": float(predict_dict["p05"][0]),
+        "p50": float(predict_dict["p50"][0]),
+        "p95": float(predict_dict["p95"][0]),
+        "mean": float(predict_dict["mean"][0]),
+        "expected_reported": float(predict_dict["expected_reported"][0]),
+    }
+
+
 @st.cache_resource
 def load_artifacts():
     preprocessor = joblib.load(ARTIFACT_DIR / "preprocessor.joblib")
@@ -197,9 +213,14 @@ if st.button("Predict Material Intensity", type="primary"):
         st.stop()
 
     first_mat = Y_COLS[0]
-    archetype_lvl = predictions[first_mat]["archetype_support_level"][0]
-    archetype_n = int(predictions[first_mat]["archetype_n_train"][0])
-    st.info(f"Archetype support level: {archetype_lvl} (n_train={archetype_n})")
+    model_result = format_model_result(predictions[first_mat])
+    st.info(
+        f"Archetype support level: {model_result['archetype_support_level']} "
+        f"(n_train={model_result['archetype_n_train']})"
+    )
+
+    with st.expander("Raw model result", expanded=False):
+        st.json(model_result)
 
     st.subheader("Predicted Material Intensities (kg/m²)")
     cols = st.columns(len(Y_COLS))
