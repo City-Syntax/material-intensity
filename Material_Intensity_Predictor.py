@@ -1,13 +1,18 @@
 from pathlib import Path
+import json
 
 import joblib
 import pandas as pd
 import streamlit as st
-from prediction_model import y_cols as Y_COLS
 
-st.set_page_config(page_title="Material Intensity (MI) Predictor", layout="wide")
+st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
 
 ARTIFACT_DIR = Path(__file__).resolve().parent
+
+# Load material columns from model_info.json instead of importing prediction_model
+with open(ARTIFACT_DIR / "model_info.json") as f:
+    _model_info = json.load(f)
+    Y_COLS = _model_info.get("y_cols", ["Concrete", "Glass", "Steel", "Wood", "Brick"])
 
 
 def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
@@ -208,9 +213,6 @@ if st.button("Predict Material Intensity", type="primary"):
             p95 = float(p["p95"][0])
             render_percentile_bar(material, p05, p50, p95)
             mean_val = float(p["mean"][0]) if "mean" in p else p50
-            # DEBUG: Show what keys are available in predictions
-            st.write(f"**Debug:** available keys: {list(p.keys())}")
-            st.write(f"**Debug:** mean_val={mean_val:.2f}, p50={p50:.2f}")
             st.metric("Mean (kg/m²)", f"{mean_val:.2f}")
             st.metric("Database Reporting Probability", f"{float(p['p_recorded'][0]):.2f}")
 else:
