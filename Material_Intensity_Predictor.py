@@ -1,8 +1,6 @@
 from pathlib import Path
-import inspect
 
 import joblib
-import numpy as np
 import pandas as pd
 import streamlit as st
 from prediction_model import y_cols as Y_COLS
@@ -56,98 +54,12 @@ def infer_construction_period_bucket(year: int) -> str:
 
 
 def query_model_predictions(model, x_proc, input_df):
-    n = x_proc.shape[0]
-
     if hasattr(model, "query"):
         return model.query(x_proc, X_raw=input_df)
-
-    p_recorded = None
-    if hasattr(model, "predict_proba"):
-        try:
-            p_recorded = np.asarray(model.predict_proba(x_proc), dtype=float)
-        except Exception:
-            p_recorded = None
-
-    if not hasattr(model, "predict"):
-        raise TypeError(
-            f"Loaded model type {type(model).__name__} has no supported inference method (query/predict)."
-        )
-
-    predict_sig = inspect.signature(model.predict)
-    predict_kwargs = {}
-    if "groups" in predict_sig.parameters:
-        predict_kwargs["groups"] = input_df["Construction period bucket"].astype(str).tolist()
-
-    raw_pred = model.predict(x_proc, **predict_kwargs)
-    intervals = {}
-
-    if isinstance(raw_pred, dict):
-        for m, mat in enumerate(Y_COLS):
-            v = raw_pred.get(mat, {})
-            if isinstance(v, dict):
-                p05 = np.asarray(v.get("p05", np.zeros(n)), dtype=float)
-                p50 = np.asarray(v.get("p50", np.zeros(n)), dtype=float)
-                p95 = np.asarray(v.get("p95", p50), dtype=float)
-            else:
-                arr = np.asarray(v, dtype=float)
-                if arr.ndim == 2 and arr.shape[1] >= 3:
-                    p05, p50, p95 = arr[:, 0], arr[:, 1], arr[:, 2]
-                else:
-                    p50 = np.asarray(arr).reshape(-1)
-                    if p50.shape[0] != n:
-                        p50 = np.zeros(n)
-                    p05 = p50.copy()
-                    p95 = p50.copy()
-            intervals[mat] = {"p05": p05, "p50": p50, "p95": p95}
-    else:
-        arr = np.asarray(raw_pred, dtype=float)
-        if arr.ndim == 3 and arr.shape[1] == len(Y_COLS) and arr.shape[2] >= 3:
-            for m, mat in enumerate(Y_COLS):
-                intervals[mat] = {
-                    "p05": arr[:, m, 0],
-                    "p50": arr[:, m, 1],
-                    "p95": arr[:, m, 2],
-                }
-        elif arr.ndim == 2 and arr.shape[1] == len(Y_COLS) * 3:
-            arr3 = arr.reshape(n, len(Y_COLS), 3)
-            for m, mat in enumerate(Y_COLS):
-                intervals[mat] = {
-                    "p05": arr3[:, m, 0],
-                    "p50": arr3[:, m, 1],
-                    "p95": arr3[:, m, 2],
-                }
-        elif arr.ndim == 2 and arr.shape[1] == len(Y_COLS):
-            for m, mat in enumerate(Y_COLS):
-                intervals[mat] = {
-                    "p05": arr[:, m],
-                    "p50": arr[:, m],
-                    "p95": arr[:, m],
-                }
-        else:
-            raise TypeError(
-                f"Unsupported predict output shape {arr.shape} for model type {type(model).__name__}."
-            )
-
-    if p_recorded is None or p_recorded.shape != (n, len(Y_COLS)):
-        p_recorded = np.ones((n, len(Y_COLS)), dtype=float)
-
-    results = {}
-    for m, mat in enumerate(Y_COLS):
-        p05 = np.asarray(intervals[mat]["p05"], dtype=float)
-        p50 = np.asarray(intervals[mat]["p50"], dtype=float)
-        p95 = np.asarray(intervals[mat]["p95"], dtype=float)
-        p_rec = p_recorded[:, m]
-        results[mat] = {
-            "p_recorded": p_rec,
-            "p05": p05,
-            "p50": p50,
-            "p95": p95,
-            "expected_reported": p_rec * p50,
-            "n_observed_train": 0,
-            "coverage_warning": False,
-            "archetype_support_level": np.array(["unknown"] * n, dtype=object),
-        }
-    return results
+    raise TypeError(
+        f"Loaded model type {type(model).__module__}.{type(model).__name__} has no 'query' method. "
+        "Please regenerate model.joblib from prediction_model.ipynb and redeploy."
+    )
 
 
 @st.cache_resource

@@ -19,7 +19,7 @@ The app loads:
 - `preprocessor.joblib`
 - `model.joblib`
 
-Model classes are defined in `two_stage_model.py` and must be present for `joblib.load` to work correctly.
+Model classes are defined in `prediction_model.py` and must be present for `joblib.load` to work correctly.
 
 Predictions include, for each material:
 - `p_recorded` — probability the material intensity is recorded in the database
@@ -49,7 +49,7 @@ Prediction intervals (`p05`, `p95`) are produced by Stage 2 quantile regressors 
 ## Troubleshooting
 
 - If port `8501` is occupied: `streamlit run Material_Intensity_Predictor.py --server.port 8502`
-- Confirm `preprocessor.joblib`, `model.joblib`, and `two_stage_model.py` all exist in the project root.
+- Confirm `preprocessor.joblib`, `model.joblib`, and `prediction_model.py` all exist in the project root.
 
 ## Inference API
 

@@ -24,7 +24,7 @@ Legacy artifacts from the previous PyTorch quantile model are obsolete and shoul
 - `Material_Intensity_Predictor.py` — Streamlit predictor app using `model.joblib`.
 - `prediction_model.ipynb` — end-to-end notebook (training, tuning, validation, export).
 - `prediction_model.py` — script version of the current notebook workflow, including diagnostics, tuning, validation, and artifact export.
-- `two_stage_model.py` — importable module defining the persisted model classes used by `joblib.load`.
+- `prediction_model.py` — also defines the persisted model classes used by `joblib.load` (`FinalQueryModel`, `ObservationModel`, `IntensityModel`).
 
 ## Integrated MI Database Sources
 
