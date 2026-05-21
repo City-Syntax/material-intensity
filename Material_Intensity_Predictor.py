@@ -208,6 +208,9 @@ if st.button("Predict Material Intensity", type="primary"):
             p95 = float(p["p95"][0])
             render_percentile_bar(material, p05, p50, p95)
             mean_val = float(p["mean"][0]) if "mean" in p else p50
+            # DEBUG: Show what keys are available in predictions
+            st.write(f"**Debug:** available keys: {list(p.keys())}")
+            st.write(f"**Debug:** mean_val={mean_val:.2f}, p50={p50:.2f}")
             st.metric("Mean (kg/m²)", f"{mean_val:.2f}")
             st.metric("Database Reporting Probability", f"{float(p['p_recorded'][0]):.2f}")
 else:
