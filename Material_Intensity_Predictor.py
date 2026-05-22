@@ -252,7 +252,7 @@ if st.button("Predict Material Intensity", type="primary"):
                 f"""
                 <div style="margin-top: 0.25rem; line-height: 1.1;">
                     <div style="font-size: 0.72rem; color: #6b7280;">Median (p50)</div>
-                    <div style="font-size: 0.96rem; font-weight: 600; color: #111827;">
+                    <div style="font-size: 1.12rem; font-weight: 600; color: #111827;">
                         {p50:.2f} <span style="font-size: 0.80em; font-weight: 500; color: #374151;">kg/m²</span>
                     </div>
                 </div>
