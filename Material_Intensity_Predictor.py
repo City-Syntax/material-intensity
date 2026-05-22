@@ -1,9 +1,24 @@
 from pathlib import Path
 import json
+import sys
+import types
 
 import joblib
 import pandas as pd
 import streamlit as st
+
+# Register model classes in sys.modules["prediction_model"] so joblib can
+# deserialize model.joblib without importing the full training script
+# (which would try to load the Excel dataset at import time).
+import model_classes as _mc
+_pm = types.ModuleType("prediction_model")
+_pm.ObservationModel = _mc.ObservationModel
+_pm.IntensityModel   = _mc.IntensityModel
+_pm.FinalQueryModel  = _mc.FinalQueryModel
+_mc.ObservationModel.__module__ = "prediction_model"
+_mc.IntensityModel.__module__   = "prediction_model"
+_mc.FinalQueryModel.__module__  = "prediction_model"
+sys.modules.setdefault("prediction_model", _pm)
 
 st.set_page_config(page_title="Material Intensity Predictor", layout="wide")
 
