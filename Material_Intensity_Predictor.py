@@ -248,7 +248,17 @@ if st.button("Predict Material Intensity", type="primary"):
             p50 = float(p["p50"][0])
             p95 = float(p["p95"][0])
             render_percentile_bar(material, p05, p50, p95)
-            st.metric("Median (p50, kg/m²)", f"{p50:.2f}")
+            st.markdown(
+                f"""
+                <div style="margin-top: 0.25rem; line-height: 1.1;">
+                    <div style="font-size: 0.72rem; color: #6b7280;">Median (p50)</div>
+                    <div style="font-size: 0.96rem; font-weight: 600; color: #111827;">
+                        {p50:.2f} <span style="font-size: 0.80em; font-weight: 500; color: #374151;">kg/m²</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             st.markdown(
                 f"""
                 <div style="margin-top: 0.25rem; line-height: 1.1;">
