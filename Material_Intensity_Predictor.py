@@ -27,7 +27,7 @@ ARTIFACT_DIR = Path(__file__).resolve().parent
 # Load material columns from model_info.json instead of importing prediction_model
 with open(ARTIFACT_DIR / "model_info.json") as f:
     _model_info = json.load(f)
-    Y_COLS = _model_info.get("y_cols", ["Concrete", "Glass", "Steel", "Wood", "Brick"])
+    Y_COLS = _model_info.get("y_cols", ["Concrete", "Steel", "Glass", "Wood", "Brick"])
 
 def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
     st.markdown(
