@@ -1,9 +1,17 @@
 {
   "X_cols": [
     "Construction period",
+    "Construction period bucket",
     "Typology",
     "Primary Code",
     "Hybrid Structure",
+    "Country",
+    "Geo_macro"
+  ],
+  "archetype_cols": [
+    "Construction period bucket",
+    "Typology",
+    "Primary Code",
     "Country"
   ],
   "y_cols": [
