@@ -106,6 +106,27 @@ From `evaluation_summary.csv`:
 
 `Cal. Cov.` refers to validation-derived conformal calibration analysed in the notebook, not to interval values returned directly by the exported model.
 
+## Data Sources
+
+The training file `Integrated_MI_database_add_Singapore.xlsx` is integrated from six source streams. Below is the source list in paper-title + DOI format:
+
+1. R: Global construction materials database and stock analysis of residential buildings between 1970-2050  
+	DOI: https://doi.org/10.1016/j.jclepro.2019.119146
+2. N: Spatiotemporal Characteristics of Global Building Material Intensity Revealed for Circular and Low-Carbon Construction  
+	DOI: https://doi.org/10.1021/acs.est.5c05684
+3. B: A database seed for a community-driven material intensity research platform  
+	DOI: https://doi.org/10.1038/s41597-019-0021-x
+4. G: Global Buildings Database Seed on Whole Life Carbon Emissions, Energy Performance, and Material Intensity (GBDB CarbEnMats)  
+	DOI: https://doi.org/10.21203/rs.3.rs-3373442/v1
+5. C: CBMICD1.0: China's building material intensity coefficient dataset (1949-2015)  
+	DOI: https://doi.org/10.1016/j.resconrec.2020.104824
+6. Singapore extension records integrated into `Integrated_MI_database_add_Singapore.xlsx`  
+	DOI: not available in the current repository metadata
+
+Related publication materials and scripts are in `Nature_Scientific-Data_MI-database/`.
+
+When updating data, keep file naming and column schema consistent with `prediction_model.ipynb` so preprocessing and artifact export remain compatible.
+
 ## Quick Start
 
 ```bash
