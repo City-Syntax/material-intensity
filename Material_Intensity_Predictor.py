@@ -27,7 +27,8 @@ ARTIFACT_DIR = Path(__file__).resolve().parent
 # Load material columns from model_info.json instead of importing prediction_model
 with open(ARTIFACT_DIR / "model_info.json") as f:
     _model_info = json.load(f)
-    Y_COLS = _model_info.get("y_cols", ["Concrete", "Steel", "Glass", "Wood", "Brick"])
+    Y_COLS   = _model_info.get("y_cols", ["Concrete", "Steel", "Glass", "Wood", "Brick"])
+
 
 def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
     st.markdown(
@@ -60,15 +61,19 @@ def render_percentile_bar(material: str, p05: float, p50: float, p95: float):
     )
 
 
+def infer_geo_macro(country: str) -> str:
+    return COUNTRY_GEO_MAP.get(country, "")
+
+
 def infer_construction_period_bucket(year: int) -> str:
     if year < 1945:
         return "pre_1945"
-    if year < 1980:
-        return "1945_1980"
-    if year < 2000:
-        return "1980_2000"
+    if year < 1970:
+        return "1945_1970"
+    if year < 1990:
+        return "1970_1990"
     if year < 2010:
-        return "2000_2010"
+        return "1990_2010"
     return "post_2010"
 
 
@@ -118,6 +123,36 @@ def load_artifacts():
     return preprocessor, model, loaded_path
 
 
+COUNTRY_GEO_MAP = {
+    "Australia": "Oceania",
+    "Austria": "Central Europe",
+    "Brazil": "Latin America",
+    "Canada": "North America",
+    "Central European": "Central Europe",
+    "China": "East Asia",
+    "Denmark": "Northern Europe",
+    "Finland": "Northern Europe",
+    "France": "Western Europe",
+    "Germany": "Central Europe",
+    "Hong Kong/China": "East Asia",
+    "Iceland ": "Northern Europe",
+    "Indonesia": "Southeast Asia",
+    "Italy": "Southern Europe",
+    "Japan": "East Asia",
+    "Lebanon": "Middle East",
+    "Luxembourg": "Western Europe",
+    "New Zealand": "Oceania",
+    "Nigeria": "Africa",
+    "North European": "Northern Europe",
+    "Norway": "Northern Europe",
+    "Singapore": "Southeast Asia",
+    "South European": "Southern Europe",
+    "Sweden": "Northern Europe",
+    "Taiwan": "East Asia",
+    "UK": "Western Europe",
+    "USA": "North America",
+}
+
 TYPOLOGY_MAP = {
     "R-SFH": "Single-Family House",
     "R-MFH": "Multi-Family House",
@@ -148,9 +183,9 @@ HYBRID_STRUCTURE_MAP = {
 
 CONSTRUCTION_PERIOD_BUCKETS = [
     "pre_1945",
-    "1945_1980",
-    "1980_2000",
-    "2000_2010",
+    "1945_1970",
+    "1970_1990",
+    "1990_2010",
     "post_2010",
 ]
 
@@ -196,8 +231,16 @@ with st.sidebar:
         format_func=lambda x: HYBRID_STRUCTURE_MAP.get(x, x),
     )
 
-    country_options = preprocessor.named_transformers_["cat"].categories_[-1]
+    country_options = preprocessor.named_transformers_["cat"].categories_[-2]
     country = st.selectbox("Country", options=country_options)
+
+    geo_macro = infer_geo_macro(country)
+    st.text_input(
+        "Region",
+        value=geo_macro,
+        disabled=True,
+        help="Auto-filled from country selection.",
+    )
 
 if st.button("Predict Material Intensity", type="primary"):
     input_df = pd.DataFrame(
@@ -209,6 +252,7 @@ if st.button("Predict Material Intensity", type="primary"):
                 "Primary Code": primary_code,
                 "Hybrid Structure": hybrid_structure,
                 "Country": country,
+                "Geo_macro": geo_macro,
             }
         ]
     )

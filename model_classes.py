@@ -18,8 +18,7 @@ archetype_cols = [
     "Construction period bucket",
     "Typology",
     "Primary Code",
-    "Hybrid Structure",
-    "Country",
+    "Country_imputed",
 ]
 y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 

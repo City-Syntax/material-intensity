@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
+# In[ ]:
 
 
-import os, random
+import random
 from pathlib import Path
 import joblib
 import numpy as np
@@ -17,22 +17,23 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_score, recall_score, f1_score,
-    mean_absolute_error, mean_squared_error, r2_score, median_absolute_error,
+    mean_absolute_error, mean_squared_error, r2_score
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
+from scipy.stats import spearmanr
 
 SEED = 42
 MIN_OBSERVED_TARGETS = 2
 LOW_OBS_THRESHOLD = 30
 IPS_MIN_PROBA = 0.05
-IPS_MAX_WEIGHT = 20.0
+IPS_MAX_WEIGHT = 6.0
 ARCHETYPE_HIGH_SUPPORT = 20
 ARCHETYPE_MEDIUM_SUPPORT = 8
 ARCHETYPE_LOW_SUPPORT = 3
 
-PERIOD_BUCKETS = ["pre_1945", "1945_1980", "1980_2000", "2000_2010", "post_2010"]
+PERIOD_BUCKETS = ["pre_1945", "1945_1970", "1970_1990", "1990_2010", "post_2010"]
 X_cols = [
     "Construction period",
     "Construction period bucket",
@@ -40,26 +41,25 @@ X_cols = [
     "Primary Code",
     "Hybrid Structure",
     "Country",
+    "Geo_macro",
 ]
+y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 archetype_cols = [
     "Construction period bucket",
     "Typology",
     "Primary Code",
-    "Hybrid Structure",
     "Country",
 ]
-y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 
 
 def to_period_bucket(year_series):
     year = pd.to_numeric(year_series, errors="coerce")
     return pd.cut(
         year,
-        bins=[-np.inf, 1945, 1980, 2000, 2010, np.inf],
+        bins=[-np.inf, 1945, 1970, 1990, 2010, np.inf],
         labels=PERIOD_BUCKETS,
         right=False,
     )
-
 
 def archetype_support_level(n_rows):
     if n_rows >= ARCHETYPE_HIGH_SUPPORT:
@@ -71,7 +71,6 @@ def archetype_support_level(n_rows):
     if n_rows >= 1:
         return "very_low"
     return "none"
-
 
 def set_global_seed(seed=SEED):
     random.seed(seed)
@@ -93,16 +92,22 @@ plt.rcParams.update({
     "axes.spines.right":  False,
     "axes.grid":          True,
     "grid.alpha":         0.3,
-    "font.size":          10,
+    "font.size":          13,
+    "axes.titlesize":     14,
+    "axes.labelsize":     13,
+    "xtick.labelsize":   12,
+    "ytick.labelsize":   12,
+    "legend.fontsize":   11,
 })
 
 
-# In[2]:
+# In[169]:
 
 
 # ==========================================================
 # Data Preparation
 # ==========================================================
+
 
 def prepare_data(
     file_path="Integrated_MI_database_add_Singapore.xlsx",
@@ -141,10 +146,19 @@ def prepare_data(
     y_val_raw   = y_val_df.to_numpy(dtype=np.float64).copy()
     y_test_raw  = y_test_df.to_numpy(dtype=np.float64).copy()
 
+    # Cap y_train at per-material p99.5 (training obs only — no leakage).
+    # Val/test targets stay raw for honest evaluation.
+    for m in range(len(y_cols)):
+        obs = y_train_mask[:, m]
+        if obs.sum() < 2:
+            continue
+        cap = np.nanpercentile(y_train_raw[obs, m], 99.5)
+        y_train_raw[obs, m] = np.minimum(y_train_raw[obs, m], cap)
+
     preprocessor = ColumnTransformer(transformers=[
         ("num", StandardScaler(), ["Construction period"]),
         ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False),
-         ["Construction period bucket", "Typology", "Primary Code", "Hybrid Structure", "Country"]),
+         ["Construction period bucket", "Typology", "Primary Code", "Hybrid Structure", "Country", "Geo_macro"]),
     ])
     X_train_proc = preprocessor.fit_transform(X_train)
     X_val_proc   = preprocessor.transform(X_val)
@@ -154,7 +168,6 @@ def prepare_data(
         X_train_proc=X_train_proc, X_val_proc=X_val_proc, X_test_proc=X_test_proc,
         X_train_raw=X_train,       X_val_raw=X_val,        X_test_raw=X_test,
         y_train_raw=y_train_raw,   y_val_raw=y_val_raw,    y_test_raw=y_test_raw,
-        y_train_df=y_train_df,     y_val_df=y_val_df,      y_test_df=y_test_df,
         y_train_mask=y_train_mask, y_val_mask=y_val_mask,  y_test_mask=y_test_mask,
         preprocessor=preprocessor,
         kept_rows=len(df),
@@ -162,113 +175,70 @@ def prepare_data(
     )
 
 
-# In[3]:
-
-
-set_global_seed(SEED)
-data = prepare_data()
-
-print("Data preparation complete.")
-print(f"X_train: {data['X_train_proc'].shape}  y_train: {data['y_train_raw'].shape}")
-print(f"X_val:   {data['X_val_proc'].shape}  y_val:   {data['y_val_raw'].shape}")
-print(f"X_test:  {data['X_test_proc'].shape}  y_test:  {data['y_test_raw'].shape}")
-print(f"Rows kept: {data['kept_rows']}  (min observed targets: {data['min_observed_targets']})")
-
-
-# In[4]:
+# In[170]:
 
 
 # ==========================================================
-# Archetype Support Threshold Diagnostics (training split)
+# Archetype Support Diagnostics (training split)
 # ==========================================================
-# Archetype is defined by archetype_cols (excludes raw construction year).
-# Use this output to set ARCHETYPE_HIGH/MEDIUM/LOW_SUPPORT in Cell 1.
+# This cell is only for checking whether the current thresholds are reasonable.
+# It does not affect model training.
 
 archetype_counts = (
     data["X_train_raw"][archetype_cols]
     .astype("string")
-    .fillna("<NA>")
-    .value_counts()
+    .groupby(archetype_cols)
+    .size()
+    .sort_values(ascending=False)
 )
 
 print("Archetype support diagnostics (training split)")
 print(f"Unique archetypes: {len(archetype_counts)}")
 print(f"Total training rows: {len(data['X_train_raw'])}")
 print()
-
-desc = archetype_counts.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
 print("Distribution of rows per archetype:")
-print(desc.to_string())
+print(
+    archetype_counts
+    .describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9, 0.95])
+    .to_string()
+)
+
+def support_distribution(counts, low, medium, high):
+    """Return number of archetypes in each support band."""
+    return pd.Series({
+        "very_low": (counts < low).sum(),
+        "low":      ((counts >= low)    & (counts < medium)).sum(),
+        "medium":   ((counts >= medium) & (counts < high)).sum(),
+        "high":     (counts >= high).sum(),
+    })
+
+support_summary = support_distribution(
+    archetype_counts,
+    ARCHETYPE_LOW_SUPPORT,
+    ARCHETYPE_MEDIUM_SUPPORT,
+    ARCHETYPE_HIGH_SUPPORT,
+)
+
 print()
-
-# === SCHEME 1: Quantile-based ===
-q = archetype_counts.quantile([0.25, 0.5, 0.75, 0.9]).round().astype(int)
-suggest_low_q = max(1, int(q.loc[0.25]))
-suggest_medium_q = max(suggest_low_q + 1, int(q.loc[0.5]))
-suggest_high_q = max(suggest_medium_q + 1, int(q.loc[0.75]))
-
-# === SCHEME 2: Practical floor (minimum practical coverage + buffer) ===
-# Use min practical floor with some buffer for realistic confidence labeling
-suggest_low_p = 3
-suggest_medium_p = 8
-suggest_high_p = 20
-
-# Compute impact: what % of archetypes fall into each support level for both schemes
-def compute_distribution(low, med, high, counts):
-    """Count archetypes in each support level."""
-    none_ct = (counts == 0).sum()
-    low_ct = ((counts > 0) & (counts < low)).sum()
-    med_ct = ((counts >= low) & (counts < med)).sum()
-    high_ct = ((counts >= med) & (counts < high)).sum()
-    vhigh_ct = (counts >= high).sum()
-    return none_ct, low_ct, med_ct, high_ct, vhigh_ct
-
-none_q, low_q, med_q, high_q, vhigh_q = compute_distribution(suggest_low_q, suggest_medium_q, suggest_high_q, archetype_counts)
-none_p, low_p, med_p, high_p, vhigh_p = compute_distribution(suggest_low_p, suggest_medium_p, suggest_high_p, archetype_counts)
-
 print("=" * 70)
-print("SCHEME 1: Quantile-based (percentile-driven)")
+print(f"LOW    = {ARCHETYPE_LOW_SUPPORT}")
+print(f"MEDIUM = {ARCHETYPE_MEDIUM_SUPPORT}")
+print(f"HIGH   = {ARCHETYPE_HIGH_SUPPORT}")
+print()
+print(support_summary.to_string())
 print("=" * 70)
-print(f"  LOW    = {suggest_low_q}  (25th percentile)")
-print(f"  MEDIUM = {suggest_medium_q}  (50th percentile)")
-print(f"  HIGH   = {suggest_high_q}  (75th percentile)")
+print(f"< {ARCHETYPE_LOW_SUPPORT} rows: weak archetype evidence")
+print(f"{ARCHETYPE_LOW_SUPPORT}-{ARCHETYPE_MEDIUM_SUPPORT - 1} rows: limited archetype evidence")
+print(f"{ARCHETYPE_MEDIUM_SUPPORT}-{ARCHETYPE_HIGH_SUPPORT - 1} rows: moderate archetype evidence")
+print(f"≥ {ARCHETYPE_HIGH_SUPPORT} rows: strong archetype evidence")
 print()
-print("Archetype distribution:")
-print(f"  None (0 rows):           {none_q:3d} archetypes")
-print(f"  Low (1–{suggest_low_q-1}):            {low_q:3d} archetypes")
-print(f"  Medium ({suggest_low_q}–{suggest_medium_q-1}):        {med_q:3d} archetypes")
-print(f"  High ({suggest_medium_q}–{suggest_high_q-1}):         {high_q:3d} archetypes")
-print(f"  V.High (≥{suggest_high_q}):       {vhigh_q:3d} archetypes")
+print("Top 10 archetype supports:")
+print(archetype_counts.head(10).to_string())
 print()
-
-print("=" * 70)
-print("SCHEME 2: Practical floor (minimum realistic coverage)")
-print("=" * 70)
-print(f"  LOW    = {suggest_low_p}  (min practical; ~25% of single-row archetypes)")
-print(f"  MEDIUM = {suggest_medium_p}  (solid representation)")
-print(f"  HIGH   = {suggest_high_p}  (strong archetype coverage)")
-print()
-print("Archetype distribution:")
-print(f"  None (0 rows):           {none_p:3d} archetypes")
-print(f"  Low (1–{suggest_low_p-1}):            {low_p:3d} archetypes")
-print(f"  Medium ({suggest_low_p}–{suggest_medium_p-1}):       {med_p:3d} archetypes")
-print(f"  High ({suggest_medium_p}–{suggest_high_p-1}):        {high_p:3d} archetypes")
-print(f"  V.High (≥{suggest_high_p}):       {vhigh_p:3d} archetypes")
-print()
-
-print("=" * 70)
-print("SUMMARY & RECOMMENDATION")
-print("=" * 70)
-print(f"Current thresholds: LOW={ARCHETYPE_LOW_SUPPORT}, MEDIUM={ARCHETYPE_MEDIUM_SUPPORT}, HIGH={ARCHETYPE_HIGH_SUPPORT}")
-print()
-print("Scheme 1 (Quantile) favors sensitivity: labels more archetypes as 'high'.")
-print(f"Scheme 2 (Practical) is more conservative: requires {suggest_low_p}+ rows for 'low' confidence.")
-print()
-print(f"Top 10 archetypes: {archetype_counts.iloc[0]} rows (max) down to {archetype_counts.iloc[9]} rows (10th)")
-print(f"Median archetype: {int(archetype_counts.median())} rows")
+print(f"Median archetype support: {int(archetype_counts.median())} rows")
 
 
-# In[5]:
+# In[171]:
 
 
 # ==========================================================
@@ -287,15 +257,13 @@ archetype_df = archetype_df.sort_values(["_order", "n_train"], ascending=[True, 
 
 out_path = Path(f"archetype_support_levels_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
 
-with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-    # One sheet per support level
+with pd.ExcelWriter(out_path) as writer:
     for level in ["high", "medium", "low", "very_low"]:
         subset = archetype_df[archetype_df["support_level"] == level].drop(columns="support_level").reset_index(drop=True)
         subset.to_excel(writer, sheet_name=level, index=False)
-    # Combined sheet
     archetype_df.to_excel(writer, sheet_name="all", index=False)
 
-print(f"Saved → {out_path.resolve()}")
+print(f"Saved → {out_path}")
 for level in ["high", "medium", "low", "very_low"]:
     n = (archetype_df["support_level"] == level).sum()
     threshold = {
@@ -305,6 +273,19 @@ for level in ["high", "medium", "low", "very_low"]:
         "very_low": f"1–{ARCHETYPE_LOW_SUPPORT - 1} rows",
     }[level]
     print(f"  {level:<10} ({threshold}): {n} archetypes")
+
+
+# In[172]:
+
+
+set_global_seed(SEED)
+data = prepare_data()
+
+print("Data preparation complete.")
+print(f"X_train: {data['X_train_proc'].shape}  y_train: {data['y_train_raw'].shape}")
+print(f"X_val:   {data['X_val_proc'].shape}  y_val:   {data['y_val_raw'].shape}")
+print(f"X_test:  {data['X_test_proc'].shape}  y_test:  {data['y_test_raw'].shape}")
+print(f"Rows kept: {data['kept_rows']}  (min observed targets: {data['min_observed_targets']})")
 
 
 # ### Data Interpretation
@@ -319,7 +300,7 @@ for level in ["high", "medium", "low", "very_low"]:
 # 
 # The main workflow uses raw observed material intensity values. Extreme values are retained because they are part of the reported database. Log transformation (log1p) is used to reduce skewness during model fitting.
 
-# In[6]:
+# In[173]:
 
 
 # ==========================================================
@@ -342,7 +323,7 @@ for m, mat in enumerate(y_cols):
           f"{n_v:>6}  {r_v:>7.1f}%  {n_te:>7}  {r_te:>8.1f}%")
 
 
-# In[7]:
+# In[174]:
 
 
 # ==========================================================
@@ -376,11 +357,11 @@ for m, mat in enumerate(y_cols):
           f"{n_above:>12}  {pct:>9.1f}%{flag}")
 
 
-# In[8]:
+# In[175]:
 
 
 # ==========================================================
-# Stage 1 — Observation Model
+# Stage 1 Observation Model
 # ==========================================================
 #
 # Predicts P(recorded | x) per material.
@@ -441,15 +422,15 @@ class ObservationModel:
         return proba
 
 
-# In[9]:
+# In[176]:
 
 
 # ==========================================================
-# Stage 2 — Intensity Model
+# Stage 2 Intensity Model
 # ==========================================================
 #
 # Per-material dual-head XGBoost trained on observed rows only.
-# Log1p transformation: target = log1p(y) = log(1 + y).  No clipping applied.
+# Log1p transformation: target = log1p(y) = log(1 + y).
 #
 # Head 1: Quantile regression with alpha = [0.05, 0.50, 0.95]
 # Head 2: Mean prediction (standard L2 regression)
@@ -506,7 +487,10 @@ class IntensityModel:
                 self.models_[material] = None
                 self.mean_models_[material] = None
                 continue
-            y_log = np.log1p(y_raw[obs, m])
+            y_vals = y_raw[obs, m].copy()
+            cap = np.nanpercentile(y_vals, 99)
+            y_vals = np.minimum(y_vals, cap)
+            y_log = np.log1p(y_vals)
             if p_recorded is None:
                 sw = np.ones(obs.sum(), dtype=np.float64)
             else:
@@ -574,7 +558,7 @@ class IntensityModel:
         return result
 
 
-# In[10]:
+# In[177]:
 
 
 # ==========================================================
@@ -590,12 +574,6 @@ class FinalQueryModel:
       Mean via standard L2 regression.
       Per-material hyperparameters via per_material_intensity_params.
 
-    Archetype-mean blending: for buildings whose archetype (archetype_cols tuple)
-    appears in training data, p50 and mean predictions are blended toward the
-    empirical archetype mean.  Blend weight grows linearly from 0 (no support)
-    to BLEND_MAX_ALPHA at ARCHETYPE_HIGH_SUPPORT rows, then stays capped.
-    p05/p95 interval bounds are not shifted.
-
     query() output per material
     ---------------------------
     database_reporting_probability   float   P(recorded | x)
@@ -609,14 +587,14 @@ class FinalQueryModel:
     archetype_support_level          str     qualitative support label from archetype_n_train
     """
 
-    BLEND_MAX_ALPHA = 0.0  # blending disabled; set > 0 to re-enable archetype-mean blending
 
     def __init__(self, observation_params=None, intensity_params=None,
                  per_material_intensity_params=None):
         _default = dict(n_estimators=300, max_depth=4, learning_rate=0.05,
                         subsample=0.8, colsample_bytree=0.8,
                         reg_alpha=0.0, reg_lambda=1.0, random_state=SEED)
-        self.tuned_observation_model = ObservationModel(**(observation_params or _default))
+        self._observation_params = observation_params or _default
+        self.tuned_observation_model = ObservationModel(**self._observation_params)
         self.tuned_intensity_model   = IntensityModel(
             **(intensity_params or _default),
             per_material_params=per_material_intensity_params,
@@ -635,40 +613,22 @@ class FinalQueryModel:
         counts = keys.value_counts()
         return {k: int(v) for k, v in counts.items()}
 
-    def _build_archetype_means(self, X_raw, y_raw, y_mask):
-        """Per-archetype, per-material mean intensity (original scale) from training."""
-        xdf = X_raw[archetype_cols].copy().reset_index(drop=True)
-        keys = xdf.apply(self._archetype_key_row, axis=1)
-        # Group by archetype key with a plain dict to avoid numpy
-        # broadcasting errors when comparing arrays of tuples.
-        key_to_rows = {}
-        for i, k in enumerate(keys):
-            key_to_rows.setdefault(k, []).append(i)
-        archetype_means = {}
-        for key, row_indices in key_to_rows.items():
-            row_idx = np.array(row_indices)
-            archetype_means[key] = {}
-            for m in range(len(y_cols)):
-                obs = y_mask[row_idx, m]
-                if obs.sum() >= 1:
-                    archetype_means[key][m] = float(np.mean(y_raw[row_idx[obs], m]))
-                else:
-                    archetype_means[key][m] = np.nan
-        return archetype_means
-
-    def fit(self, X_proc, y_raw, y_mask, X_raw=None):
+    def fit(self, X_proc, y_raw, y_mask, X_raw=None, ips_n_folds=5):
         y_observed = y_mask
         self.n_observed_train_ = {
             mat: int(y_observed[:, m].sum()) for m, mat in enumerate(y_cols)
         }
         self.archetype_count_map_ = self._build_archetype_count_map(X_raw)
-        self.archetype_means_ = (
-            self._build_archetype_means(X_raw, y_raw, y_mask)
-            if X_raw is not None else {}
-        )
+        # Cross-fitted OOF propensity scores for unbiased IPS weighting of Stage 2.
+        kf = KFold(n_splits=ips_n_folds, shuffle=True, random_state=SEED)
+        p_recorded_oof = np.zeros((X_proc.shape[0], len(y_cols)), dtype=float)
+        for fold_train_idx, fold_oof_idx in kf.split(X_proc):
+            obs_fold = ObservationModel(**self._observation_params)
+            obs_fold.fit(X_proc[fold_train_idx], y_observed[fold_train_idx])
+            p_recorded_oof[fold_oof_idx] = obs_fold.predict_proba(X_proc[fold_oof_idx])
+        # Train final observation model on all training data.
         self.tuned_observation_model.fit(X_proc, y_observed)
-        p_recorded = self.tuned_observation_model.predict_proba(X_proc)
-        self.tuned_intensity_model.fit(X_proc, y_raw, y_observed, p_recorded=p_recorded)
+        self.tuned_intensity_model.fit(X_proc, y_raw, y_observed, p_recorded=p_recorded_oof)
         return self
 
     def query(self, X_proc, X_raw=None):
@@ -681,8 +641,8 @@ class FinalQueryModel:
 
         Returns
         -------
-        dict: material -> {database_reporting_probability, p_recorded, p05, p50, p95, mean,
-                           expected_reported, n_observed_train, coverage_warning,
+        dict: material -> {database_reporting_probability, p_recorded, p05, p50, p95,
+                           mean, expected_reported, n_observed_train, coverage_warning,
                            archetype_n_train, archetype_support_level}
         """
         p_recorded = self.tuned_observation_model.predict_proba(X_proc)
@@ -705,32 +665,6 @@ class FinalQueryModel:
                 [archetype_support_level(int(v)) for v in archetype_n], dtype=object
             )
 
-            # Blend p50 and mean toward archetype training mean, weighted by support.
-            # Blending starts only at ARCHETYPE_MEDIUM_SUPPORT (8 rows) and grows
-            # linearly to BLEND_MAX_ALPHA at ARCHETYPE_HIGH_SUPPORT (20 rows).
-            # p05/p95 interval bounds are not shifted.
-            _eff_n  = np.maximum(archetype_n - ARCHETYPE_MEDIUM_SUPPORT, 0)
-            _scale  = ARCHETYPE_HIGH_SUPPORT - ARCHETYPE_MEDIUM_SUPPORT  # 20 - 8 = 12
-            blend_w = np.clip(_eff_n / _scale, 0.0, 1.0) * self.BLEND_MAX_ALPHA
-            arch_keys = keys.values
-
-            for m, mat in enumerate(y_cols):
-                arch_means_arr = np.array(
-                    [self.archetype_means_.get(k, {}).get(m, np.nan) for k in arch_keys],
-                    dtype=np.float64,
-                )
-                valid = np.isfinite(arch_means_arr) & (blend_w > 0)
-                if valid.any():
-                    w = blend_w[valid]
-                    intervals[mat]["p50"][valid] = (
-                        (1.0 - w) * intervals[mat]["p50"][valid]
-                        + w * arch_means_arr[valid]
-                    )
-                    means_dict[mat][valid] = (
-                        (1.0 - w) * means_dict[mat][valid]
-                        + w * arch_means_arr[valid]
-                    )
-
         result = {}
         for m, mat in enumerate(y_cols):
             n_obs = self.n_observed_train_.get(mat, 0)
@@ -750,7 +684,7 @@ class FinalQueryModel:
         return result
 
 
-# In[11]:
+# In[178]:
 
 
 # ==========================================================
@@ -791,10 +725,14 @@ best_observation_params = {**obs_study.best_params, "random_state": SEED}
 print(f"Stage 1 best  mean AUC = {-obs_study.best_value:.4f}")
 print("best_observation_params:", best_observation_params)
 
-# Precompute Stage 1 recording probabilities on train for Stage 2 IPS weighting.
-obs_for_ips = ObservationModel(**best_observation_params)
-obs_for_ips.fit(data["X_train_proc"], data["y_train_mask"])
-p_rec_train_for_ips = obs_for_ips.predict_proba(data["X_train_proc"])
+# Cross-fitted Stage 1 probabilities for unbiased IPS weights (5-fold OOF).
+kf = KFold(n_splits=5, shuffle=True, random_state=SEED)
+p_rec_train_for_ips = np.zeros((len(data["X_train_proc"]), len(y_cols)), dtype=float)
+for fold_train_idx, fold_oof_idx in kf.split(data["X_train_proc"]):
+    obs_fold = ObservationModel(**best_observation_params)
+    obs_fold.fit(data["X_train_proc"][fold_train_idx], data["y_train_mask"][fold_train_idx])
+    p_rec_train_for_ips[fold_oof_idx] = obs_fold.predict_proba(data["X_train_proc"][fold_oof_idx])
+print("Cross-fitted IPS propensity scores computed (5-fold).")
 
 # ── Stage 2: Global Intensity Model (shared hyperparams, used as fallback) ───
 def _int_objective(trial):
@@ -880,7 +818,46 @@ for mat, p in best_intensity_params_per_material.items():
     print(f"  {mat}: {p}")
 
 
-# In[12]:
+# In[179]:
+
+
+# ==============================================================
+# IPW Weight Distribution Diagnostics
+# Shows raw (before hard cap) and effective (after cap + normalisation)
+# weight percentiles per material to validate IPS_MAX_WEIGHT.
+# Run after p_rec_train_for_ips is computed (cell above).
+# ==============================================================
+
+print(f"IPS_MIN_PROBA = {IPS_MIN_PROBA}  ->  max raw weight before hard cap = {1/IPS_MIN_PROBA:.1f}")
+print(f"IPS_MAX_WEIGHT = {IPS_MAX_WEIGHT}")
+print()
+
+pcts = [50, 75, 90, 95, 99]
+hdr = (f"{'Material':<10}  {'n_obs':>5}  {'p_min':>7}  {'p_max':>7}  "
+       + "  ".join(f"w_p{p:02d}" for p in pcts)
+       + "  % capped")
+print(hdr)
+print("-" * len(hdr))
+
+for m, mat in enumerate(y_cols):
+    obs = data["y_train_mask"][:, m]
+    p_raw   = p_rec_train_for_ips[obs, m]
+    p_clip  = np.clip(p_raw, IPS_MIN_PROBA, 1.0)
+    w_raw   = 1.0 / p_clip
+    w_capped = np.minimum(w_raw, IPS_MAX_WEIGHT)
+    w_final  = w_capped / np.mean(w_capped)
+    pct_capped = 100.0 * np.mean(w_raw > IPS_MAX_WEIGHT)
+    pct_str = "  ".join(f"{np.percentile(w_final, p):>7.2f}" for p in pcts)
+    print(f"{mat:<10}  {obs.sum():>5}  {p_raw.min():>7.3f}  {p_raw.max():>7.3f}  {pct_str}  {pct_capped:>7.1f}%")
+
+print()
+print("Columns: w_pXX = effective weight percentiles (post-cap, normalised) fed to XGBoost.")
+print(f"% capped = fraction of observed rows that hit the IPS_MAX_WEIGHT={IPS_MAX_WEIGHT} hard cap.")
+print("If p99 >> 3 or % capped is large, consider lowering IPS_MAX_WEIGHT or "
+      f"using the adaptive 95th-pct cap: np.percentile(1/p_clip, 95).")
+
+
+# In[180]:
 
 
 # ==========================================================
@@ -909,12 +886,9 @@ for mat, n in final_query_model.n_observed_train_.items():
     warn = "  *** low-data warning" if n < LOW_OBS_THRESHOLD else ""
     print(f"  {mat:<10}  {n:>4} training observations{warn}")
 
-print(f"\nArchetype means stored for {len(final_query_model.archetype_means_)} archetypes.")
-print(f"BLEND_MAX_ALPHA = {FinalQueryModel.BLEND_MAX_ALPHA}  "
-      f"(applied when archetype_n >= {ARCHETYPE_HIGH_SUPPORT})")
 
 
-# In[13]:
+# In[181]:
 
 
 # ==========================================================
@@ -951,85 +925,7 @@ print("Stage 1 — Recording probability model  (test set)")
 print(pd.DataFrame(rows).to_string(index=False))
 
 
-# In[14]:
-
-
-# ==========================================================
-# Stage 2 Evaluation — Conditional Intensity: Point Estimates
-# Metrics: MAE, RMSE, R2, Median AE  (observed rows only)
-# Evaluated on the held-out test set.
-# ==========================================================
-
-intervals_test = tuned_intensity_model.predict_quantiles(data["X_test_proc"])
-
-print("Stage 2 — Conditional intensity model  (test set, observed rows only)")
-print(f"{'Material':<12}  {'n_obs':>6}  {'MAE':>8}  {'RMSE':>8}  {'R2':>8}  {'MedianAE':>9}")
-print("-" * 60)
-
-for m, mat in enumerate(y_cols):
-    obs = data["y_test_mask"][:, m]
-    if obs.sum() < 2:
-        print(f"{mat:<12}  {'—':>6}")
-        continue
-    y_true = data["y_test_raw"][obs, m]
-    y_hat  = intervals_test[mat]["p50"][obs]
-    mae    = mean_absolute_error(y_true, y_hat)
-    rmse   = np.sqrt(mean_squared_error(y_true, y_hat))
-    r2     = r2_score(y_true, y_hat)
-    medae  = median_absolute_error(y_true, y_hat)
-    print(f"{mat:<12}  {int(obs.sum()):>6}  {mae:>8.2f}  {rmse:>8.2f}  {r2:>8.3f}  {medae:>9.2f}")
-
-
-# In[15]:
-
-
-# ==========================================================
-# Stage 2 Improvement Summary
-# Compares three models on the held-out test set (observed rows only):
-#   (A) Original: global Optuna params, no blending  [prior run baseline]
-#   (B) Per-material: per-material Optuna params, no blending
-#   (C) Final: per-material params + archetype-mean blending
-#
-# (B) comes from tuned_intensity_model.predict_quantiles() — per-material params
-# (C) comes from final_query_model.query() — per-material params + blending
-# ==========================================================
-
-_query_test = final_query_model.query(data["X_test_proc"], X_raw=data["X_test_raw"])
-
-print("Stage 2 improvement summary  (test set, observed rows only)")
-print(f"{'Material':<12}  {'n_obs':>6}  {'MAE (B) no-blend':>18}  {'MAE (C) blended':>17}  {'Delta MAE':>10}  {'R2 (B)':>8}  {'R2 (C)':>8}")
-print("-" * 90)
-
-for m, mat in enumerate(y_cols):
-    obs = data["y_test_mask"][:, m]
-    if obs.sum() < 2:
-        continue
-    y_true = data["y_test_raw"][obs, m]
-
-    # (B) per-material tuned, no blending
-    y_b = intervals_test[mat]["p50"][obs]
-    mae_b = mean_absolute_error(y_true, y_b)
-    r2_b  = r2_score(y_true, y_b)
-
-    # (C) per-material tuned + archetype-mean blended
-    y_c = _query_test[mat]["p50"][obs]
-    mae_c = mean_absolute_error(y_true, y_c)
-    r2_c  = r2_score(y_true, y_c)
-
-    delta = mae_c - mae_b
-    flag  = " <better" if delta < 0 else (" <worse" if delta > 0 else "")
-    print(f"{mat:<12}  {int(obs.sum()):>6}  {mae_b:>18.2f}  {mae_c:>17.2f}  {delta:>+10.2f}{flag}  {r2_b:>8.3f}  {r2_c:>8.3f}")
-
-# Proportion of test rows that received blending
-n_blended = (
-    np.array([_query_test[y_cols[0]]["archetype_support_level"]])
-    != "very_low"
-).sum()
-print(f"\nRows with blend weight > 0: "
-      f"{int((np.array([_query_test[y_cols[0]]['archetype_n_train']]) > 0).sum())} / {len(data['X_test_proc'])}")
-
-
-# In[16]:
+# In[182]:
 
 
 # ==========================================================
@@ -1100,7 +996,7 @@ for m, mat in enumerate(y_cols):
     print(f"{mat:<12}  {int(obs.sum()):>6}  {cov_u:>9.3f}  {cov_c:>9.3f}  {w_u.mean():>12.2f}  {w_c.mean():>10.2f}  {np.median(w_u):>12.2f}  {np.median(w_c):>10.2f}")
 
 
-# In[17]:
+# In[183]:
 
 
 # ==========================================================
@@ -1139,7 +1035,76 @@ for m, mat in enumerate(y_cols):
     print(f"{mat:<12}  {mae_s2:>12.2f}  {mae_med:>12.2f}  {mae_ridge:>10.2f}  {mae_rf:>8.2f}")
 
 
-# In[18]:
+# In[184]:
+
+
+# ==========================================================
+# IPW Ablation — Stage 2 with vs. without inverse-propensity weights
+#
+# Re-trains Stage 2 using the SAME tuned hyperparameters but with
+# uniform sample weights (p_recorded=None) to isolate IPW\'s contribution.
+# A positive Gain% means IPW reduces MAE relative to no-IPW.
+# ==========================================================
+
+# ── Re-train Stage 2 without IPW (uniform weights) ──────────────────────────
+_per_mat_params = getattr(
+    final_query_model.tuned_intensity_model, "per_material_params", {}
+)
+no_ipw_model = IntensityModel(per_material_params=_per_mat_params)
+no_ipw_model.fit(
+    data["X_train_proc"],
+    data["y_train_raw"],
+    data["y_train_mask"],
+    p_recorded=None,          # uniform weights — no IPW
+)
+intervals_no_ipw = no_ipw_model.predict_quantiles(data["X_test_proc"])
+
+# ── Full test-set comparison ─────────────────────────────────────────────────
+print("IPW Ablation — Stage 2 with vs. without IPW  (test set, observed rows only)")
+print(f"{'Material':<12}  {'n_obs':>6}  {'MAE (IPW)':>11}  {'MAE (no-IPW)':>13}  {'ΔMAE':>8}  {'Gain%':>7}")
+print("-" * 68)
+
+for m, mat in enumerate(y_cols):
+    obs = data["y_test_mask"][:, m]
+    if obs.sum() < 2:
+        continue
+    y_true     = data["y_test_raw"][obs, m]
+    mae_ipw    = mean_absolute_error(y_true, intervals_test[mat]["p50"][obs])
+    mae_no_ipw = mean_absolute_error(y_true, intervals_no_ipw[mat]["p50"][obs])
+    delta      = mae_ipw - mae_no_ipw
+    gain_pct   = (mae_no_ipw - mae_ipw) / mae_no_ipw * 100
+    flag       = "  ✓" if gain_pct > 0 else "  ✗"
+    print(f"{mat:<12}  {int(obs.sum()):>6}  {mae_ipw:>11.2f}  {mae_no_ipw:>13.2f}  "
+          f"{delta:>+8.2f}  {gain_pct:>6.1f}%{flag}")
+# ── Low-support sub-group (archetype_n_train <= 3) ──────────────────────────
+print("\n--- Low-support archetypes only (archetype_n_train ≤ 3) ---")
+print(f"{'Material':<12}  {'n_low':>7}  {'MAE (IPW)':>11}  {'MAE (no-IPW)':>13}  {'Gain%':>7}")
+print("-" * 57)
+
+_q = final_query_model.query(data["X_test_proc"], X_raw=data["X_test_raw"])
+arch_n = np.array(_q[y_cols[0]]["archetype_n_train"], dtype=float)
+low_mask = arch_n <= 3
+
+for m, mat in enumerate(y_cols):
+    obs_test = data["y_test_mask"][:, m]
+    obs_low  = obs_test & low_mask
+    if obs_low.sum() < 5:
+        print(f"{mat:<12}  {int(obs_low.sum()):>7}  (n < 5, skipped)")
+        continue
+    y_true     = data["y_test_raw"][obs_low, m]
+    mae_ipw    = mean_absolute_error(y_true, intervals_test[mat]["p50"][obs_low])
+    mae_no_ipw = mean_absolute_error(y_true, intervals_no_ipw[mat]["p50"][obs_low])
+    gain_pct   = (mae_no_ipw - mae_ipw) / mae_no_ipw * 100
+    flag       = "  ✓" if gain_pct > 0 else "  ✗"
+    print(f"{mat:<12}  {int(obs_low.sum()):>7}  {mae_ipw:>11.2f}  {mae_no_ipw:>13.2f}  "
+          f"{gain_pct:>6.1f}%{flag}")
+
+print("\nNote: Gain% = (MAE_no_IPW - MAE_IPW) / MAE_no_IPW * 100.")
+print("      IPW up-weights under-represented archetypes; gains are")
+print("      expected to be largest in the low-support sub-group.")
+
+
+# In[185]:
 
 
 # ==========================================================
@@ -1148,7 +1113,8 @@ for m, mat in enumerate(y_cols):
 
 print("Final Summary — Test Set")
 hdr = (f"{'Material':<12}  {'n_obs_train':>12}  {'AUC':>6}  "
-       f"{'MAE':>8}  {'RMSE':>8}  {'R2':>6}  {'CovU':>7}  {'CovC':>7}  {'MeanWU':>10}  {'MeanWC':>10}  {'MedWU':>10}  {'MedWC':>10}")
+       f"{'MAE':>8}  {'RMSE':>8}  {'R2':>6}  {'R2_log':>7}  {'SpearR':>7}  {'NMAE':>6}  "
+       f"{'CovU':>7}  {'CovC':>7}  {'MeanWU':>10}  {'MeanWC':>10}  {'MedWU':>10}  {'MedWC':>10}")
 print(hdr)
 print("-" * len(hdr))
 
@@ -1163,7 +1129,8 @@ for m, mat in enumerate(y_cols):
 
     obs_te = data["y_test_mask"][:, m]
     if obs_te.sum() < 2:
-        mae = rmse = r2 = cov_u = cov_c = mean_w_u = mean_w_c = med_w_u = med_w_c = float("nan")
+        mae = rmse = r2 = r2_log = spear_r = nmae = float("nan")
+        cov_u = cov_c = mean_w_u = mean_w_c = med_w_u = med_w_c = float("nan")
     else:
         y_te   = data["y_test_raw"][obs_te, m]
         p50_te = intervals_test[mat]["p50"][obs_te]
@@ -1174,6 +1141,10 @@ for m, mat in enumerate(y_cols):
         mae    = round(mean_absolute_error(y_te, p50_te), 2)
         rmse   = round(np.sqrt(mean_squared_error(y_te, p50_te)), 2)
         r2     = round(r2_score(y_te, p50_te), 3)
+        r2_log = round(r2_score(np.log1p(y_te), np.log1p(p50_te)), 3)
+        # Robust metrics: Spearman rank correlation and Normalised MAE
+        spear_r = round(float(spearmanr(y_te, p50_te).statistic), 3)
+        nmae    = round(mae / float(np.median(y_te)), 3)
         cov_u  = round(float(((y_te >= p05_u) & (y_te <= p95_u)).mean()), 3)
         cov_c  = round(float(((y_te >= p05_c) & (y_te <= p95_c)).mean()), 3)
         w_u    = p95_u - p05_u
@@ -1184,10 +1155,16 @@ for m, mat in enumerate(y_cols):
         med_w_c  = round(float(np.median(w_c)), 2)
 
     summary_rows.append({"Material": mat, "n_obs_train": n_obs_train, "AUC": auc,
-                          "MAE": mae, "RMSE": rmse, "R2": r2, "CovU": cov_u, "CovC": cov_c,
-                          "MeanWU": mean_w_u, "MeanWC": mean_w_c, "MedWU": med_w_u, "MedWC": med_w_c})
+                          "MAE": mae, "RMSE": rmse, "R2": r2, "R2_log": r2_log,
+                          "SpearR": spear_r, "NMAE": nmae,
+                          "CovU": cov_u, "CovC": cov_c,
+                          "MeanWU": mean_w_u, "MeanWC": mean_w_c,
+                          "MedWU": med_w_u, "MedWC": med_w_c})
     print(f"{mat:<12}  {n_obs_train:>12}  {str(auc):>6}  "
-          f"{str(mae):>8}  {str(rmse):>8}  {str(r2):>6}  {str(cov_u):>7}  {str(cov_c):>7}  {str(mean_w_u):>10}  {str(mean_w_c):>10}  {str(med_w_u):>10}  {str(med_w_c):>10}")
+          f"{str(mae):>8}  {str(rmse):>8}  {str(r2):>6}  {str(r2_log):>7}  "
+          f"{str(spear_r):>7}  {str(nmae):>6}  "
+          f"{str(cov_u):>7}  {str(cov_c):>7}  {str(mean_w_u):>10}  {str(mean_w_c):>10}  "
+          f"{str(med_w_u):>10}  {str(med_w_c):>10}")
 
 summary_df = pd.DataFrame(summary_rows)
 
@@ -1196,60 +1173,6 @@ def _val(mat, col):
     """Extract a numeric metric from summary_df; return NaN if unavailable."""
     v = summary_df.loc[summary_df["Material"] == mat, col].iat[0]
     return float(v) if not pd.isna(v) else float("nan")
-
-
-# In[19]:
-
-
-# ==========================================================
-# [OPTIONAL] Sensitivity Analysis: Raw vs 99%-Clipped Targets
-# Set RUN_CLIP_SENSITIVITY = True to compare.
-# The clipped model is labelled as sensitivity analysis only.
-# Main results always use raw, unclipped target values.
-# ==========================================================
-
-RUN_CLIP_SENSITIVITY = True
-
-if RUN_CLIP_SENSITIVITY:
-    # Build clipped training targets (99th-percentile bound from training only)
-    y_tr_clip  = data["y_train_raw"].copy()
-    y_val_clip = data["y_val_raw"].copy()
-    y_te_clip  = data["y_test_raw"].copy()
-    for m, mat in enumerate(y_cols):
-        obs_tr = data["y_train_mask"][:, m]
-        if not np.any(obs_tr):
-            continue
-        ub = np.quantile(y_tr_clip[obs_tr, m], 0.99)
-        for arr, mask in [(y_tr_clip,  data["y_train_mask"]),
-                          (y_val_clip, data["y_val_mask"]),
-                          (y_te_clip,  data["y_test_mask"])]:
-            rows = mask[:, m]
-            arr[rows, m] = np.minimum(arr[rows, m], ub)
-
-    # Train Stage 2 on clipped targets using the same IPS weighting protocol.
-    clip_intensity = IntensityModel(**best_intensity_params)
-    clip_intensity.fit(
-        data["X_train_proc"],
-        y_tr_clip,
-        data["y_train_mask"],
-        p_recorded=p_rec_train_for_ips,
-    )
-    ivs_clip = clip_intensity.predict_quantiles(data["X_test_proc"])
-
-    # Compare MAE against raw test targets (fair comparison)
-    print("Sensitivity analysis: raw vs 99%-clipped Stage 2 targets")
-    print("(MAE evaluated on raw test targets in both cases)")
-    print(f"{'Material':<12}  {'MAE raw':>10}  {'MAE clipped':>12}  {'Diff':>8}")
-    print("-" * 48)
-    for m, mat in enumerate(y_cols):
-        obs = data["y_test_mask"][:, m]
-        if obs.sum() < 2:
-            continue
-        y_te_raw = data["y_test_raw"][obs, m]
-        mae_raw  = mean_absolute_error(y_te_raw, intervals_test[mat]["p50"][obs])
-        mae_clip = mean_absolute_error(y_te_raw, ivs_clip[mat]["p50"][obs])
-        print(f"{mat:<12}  {mae_raw:>10.2f}  {mae_clip:>12.2f}  {mae_clip - mae_raw:>+8.2f}")
-    print("\nNote: this is a sensitivity check. Main model uses raw targets.")
 
 
 # ---
@@ -1261,7 +1184,7 @@ if RUN_CLIP_SENSITIVITY:
 # `tuned_observation_model` and `tuned_intensity_model` from `final_query_model`.
 # 
 
-# ### Figure 1 — Database coverage: observed records per material
+# ### Figure 1 Database coverage: observed records per material
 # 
 # Shows how many buildings have a recorded (non-missing) intensity value for each
 # material across all rows in the dataset. The percentage label is the fraction of
@@ -1269,7 +1192,7 @@ if RUN_CLIP_SENSITIVITY:
 # recording uncertainty in Stage 1.
 # 
 
-# In[20]:
+# In[186]:
 
 
 # ==========================================================
@@ -1298,14 +1221,14 @@ plt.tight_layout()
 plt.show()
 
 
-# ### Figure 2 — Observation model performance by material
+# ### Figure 2 Observation model performance by material
 # 
 # AUC-ROC of the Stage 1 observation model on the test set, per material. A higher
 # AUC indicates the model better distinguishes buildings with a recorded value from
 # those without. The dashed red line marks the random-classifier baseline (AUC = 0.5).
 # 
 
-# In[21]:
+# In[187]:
 
 
 # ==========================================================
@@ -1323,17 +1246,17 @@ ax.axhline(0.5, color=_REF, lw=1.5, ls="--",
 for bar, v in zip(bars, aucs):
     if not pd.isna(v):
         ax.text(bar.get_x() + bar.get_width() / 2, v + 0.012,
-                f"{v:.3f}", ha="center", va="bottom", fontsize=9)
+                f"{v:.3f}", ha="center", va="bottom", fontsize=12)
 ax.set_ylim(0, 1.08)
-ax.set_xlabel("Material")
-ax.set_ylabel("AUC-ROC (test set)")
-ax.set_title("Observation model performance by material")
-ax.legend(fontsize=8)
+ax.set_xlabel("Material", fontsize=13)
+ax.set_ylabel("AUC-ROC (test set)", fontsize=13)
+ax.set_title("Observation model performance by material", fontsize=14)
+ax.legend(fontsize=11)
 plt.tight_layout()
 plt.show()
 
 
-# ### Figure 3 — Conditional reported-intensity model error by material
+# ### Figure 3 Conditional reported-intensity model error by material
 # 
 # Mean absolute error (MAE, kg/m²) of the Stage 2 model's median prediction (p50)
 # against observed reported intensity values on the test set. Only buildings where
@@ -1341,7 +1264,7 @@ plt.show()
 # conditional intensity estimates.
 # 
 
-# In[22]:
+# In[188]:
 
 
 # ==========================================================
@@ -1358,10 +1281,10 @@ for bar, v in zip(bars, maes):
     if not pd.isna(v) and v > 0:
         ax.text(bar.get_x() + bar.get_width() / 2,
                 bar.get_height() + max(vals) * 0.012,
-                f"{v:.1f}", ha="center", va="bottom", fontsize=9)
-ax.set_xlabel("Material")
-ax.set_ylabel("MAE  (kg/m²)")
-ax.set_title("Conditional reported-intensity model error by material")
+                f"{v:.1f}", ha="center", va="bottom", fontsize=12)
+ax.set_xlabel("Material", fontsize=13)
+ax.set_ylabel("MAE  (kg/m²)", fontsize=13)
+ax.set_title("Conditional reported-intensity model error by material", fontsize=14)
 plt.tight_layout()
 plt.show()
 
@@ -1375,7 +1298,7 @@ plt.show()
 # one order of magnitude.
 # 
 
-# In[23]:
+# In[189]:
 
 
 # ==========================================================
@@ -1390,7 +1313,7 @@ for ax, m in zip(axes, range(len(y_cols))):
     if obs.sum() < 2:
         ax.text(0.5, 0.5, "insufficient\ndata", transform=ax.transAxes,
                 ha="center", va="center", color=_GRAY)
-        ax.set_title(mat, fontsize=10)
+        ax.set_title(mat, fontsize=13)
         continue
 
     y_true = data["y_test_raw"][obs, m]
@@ -1413,13 +1336,13 @@ for ax, m in zip(axes, range(len(y_cols))):
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
 
-    ax.set_title(mat, fontsize=10)
-    ax.set_xlabel("Observed  (kg/m²)", fontsize=8)
+    ax.set_title(mat, fontsize=13)
+    ax.set_xlabel("Observed  (kg/m²)", fontsize=12)
     if m == 0:
-        ax.set_ylabel("Predicted p50  (kg/m²)", fontsize=8)
-    ax.legend(fontsize=7, loc="upper left")
+        ax.set_ylabel("Predicted p50  (kg/m²)", fontsize=12)
+    ax.legend(fontsize=11, loc="upper left")
 
-fig.suptitle("Observed vs predicted reported intensity (test set)", fontsize=11)
+fig.suptitle("Observed vs predicted reported intensity (test set)", fontsize=13)
 plt.tight_layout()
 plt.show()
 
@@ -1432,7 +1355,7 @@ plt.show()
 # suggests the intervals are too wide; under-coverage suggests they are too narrow.
 # 
 
-# In[24]:
+# In[190]:
 
 
 # ==========================================================
@@ -1450,21 +1373,23 @@ x = np.arange(len(y_cols))
 width = 0.35
 
 fig, ax = plt.subplots(figsize=(8, 3.8))
-bars_u = ax.bar(x - width / 2, vals_u, width, color=_GRAY,   edgecolor="white", label="Uncalibrated",  zorder=3, alpha=0.8)
-bars_c = ax.bar(x + width / 2, vals_c, width, color=colors,  edgecolor="white", label="Calibrated",    zorder=3)
+bars_u = ax.bar(x - width/2, vals_u, width, color=_GRAY,  edgecolor="white",
+                label="Uncalibrated", zorder=3, alpha=0.8)
+bars_c = ax.bar(x + width/2, vals_c, width, color=colors, edgecolor="white",
+                label="Calibrated",   zorder=3)
 ax.axhline(0.90, color=_REF, lw=1.5, ls="--",
            label="Nominal 90% coverage", zorder=2)
 for bar, v in zip(bars_c, covs_c):
     if not pd.isna(v):
         ax.text(bar.get_x() + bar.get_width() / 2, v + 0.012,
-                f"{v:.2f}", ha="center", va="bottom", fontsize=8)
+                f"{v:.2f}", ha="center", va="bottom", fontsize=12)
 ax.set_ylim(0, 1.18)
 ax.set_xticks(x)
-ax.set_xticklabels(y_cols)
-ax.set_xlabel("Material")
-ax.set_ylabel("Empirical coverage (test set)")
-ax.set_title("Empirical coverage of 90% prediction intervals")
-ax.legend(fontsize=8)
+ax.set_xticklabels(y_cols, fontsize=12)
+ax.set_xlabel("Material", fontsize=13)
+ax.set_ylabel("Empirical coverage (test set)", fontsize=13)
+ax.set_title("Empirical coverage of 90% prediction intervals", fontsize=14)
+ax.legend(fontsize=11)
 plt.tight_layout()
 plt.show()
 
@@ -1479,7 +1404,7 @@ plt.show()
 # intensity, which is the recording probability multiplied by the conditional median.
 # 
 
-# In[25]:
+# In[191]:
 
 
 # ==========================================================
@@ -1504,16 +1429,16 @@ mean_val = [float(result[mat]["mean"][0])              for mat in y_cols]
 exp_rep  = [float(result[mat]["expected_reported"][0]) for mat in y_cols]
 x        = np.arange(len(y_cols))
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4))
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
 
 # -- Left: recording probability --
 ax1.bar(y_cols, p_rec, color=_C1, edgecolor="white", zorder=3)
 for i, v in enumerate(p_rec):
-    ax1.text(i, v + 0.025, f"{v:.2f}", ha="center", fontsize=9)
+    ax1.text(i, v + 0.025, f"{v:.2f}", ha="center", fontsize=12)
 ax1.set_ylim(0, 1.12)
-ax1.set_xlabel("Material")
-ax1.set_ylabel("Recording probability")
-ax1.set_title("P(recorded | building features)")
+ax1.set_xlabel("Material", fontsize=13)
+ax1.set_ylabel("Recording probability", fontsize=13)
+ax1.set_title("P(recorded | building features)", fontsize=14)
 
 # -- Right: conditional intensity + PI --
 err_lo = [max(p50[i] - p05[i], 0.0) for i in range(len(y_cols))]
@@ -1527,17 +1452,17 @@ ax2.scatter(x, mean_val, color=_REF, zorder=6, s=70, marker="D",
 ax2.scatter(x, exp_rep, color=_C2, zorder=5, s=60,
             label="Expected reported  (p_rec × p50)")
 ax2.set_xticks(x)
-ax2.set_xticklabels(y_cols)
-ax2.set_xlabel("Material")
-ax2.set_ylabel("Reported intensity  (kg/m²)")
-ax2.set_title("Conditional intensity + 90% prediction interval")
-ax2.legend(fontsize=8)
+ax2.set_xticklabels(y_cols, fontsize=12)
+ax2.set_xlabel("Material", fontsize=13)
+ax2.set_ylabel("Reported intensity  (kg/m²)", fontsize=13)
+ax2.set_title("Conditional intensity + 90% prediction interval", fontsize=14)
+ax2.legend(fontsize=11)
 
-fig.suptitle("Example query — single building from test set", fontsize=11)
+fig.suptitle("Example query — single building from test set", fontsize=13)
 plt.tight_layout()
 plt.show()
 
-# Print building context + archetype support
+# Print building context and archetype support
 bldg = data["X_test_raw"].iloc[example_idx]
 print("\nExample building features:")
 for col in X_cols:
@@ -1553,7 +1478,7 @@ for i, mat in enumerate(y_cols):
     print(f"  {mat:<10}  {p05[i]:>8.2f}  {p50[i]:>8.2f}  {mean_val[i]:>8.2f}  {p95[i]:>8.2f}")
 
 
-# In[26]:
+# In[ ]:
 
 
 # ==========================================================
@@ -1605,8 +1530,8 @@ FinalQueryModel.__module__  = "prediction_model"
 import json as _json
 
 # 1. Trained model
-joblib.dump(final_query_model, "model.joblib")
-print("Saved: model.joblib")
+joblib.dump(final_query_model, "model_finalquery.joblib")
+print("Saved: model_finalquery.joblib")
 
 # 2. Preprocessor
 joblib.dump(data["preprocessor"], "preprocessor.joblib")

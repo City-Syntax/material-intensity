@@ -5,13 +5,13 @@
     "Typology",
     "Primary Code",
     "Hybrid Structure",
-    "Country"
+    "Country",
+    "Geo_macro"
   ],
   "archetype_cols": [
     "Construction period bucket",
     "Typology",
     "Primary Code",
-    "Hybrid Structure",
     "Country"
   ],
   "y_cols": [
