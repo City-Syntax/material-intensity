@@ -18,7 +18,7 @@ archetype_cols = [
     "Construction period bucket",
     "Typology",
     "Primary Code",
-    "Country_imputed",
+    "Country",
 ]
 y_cols = ["Concrete", "Glass", "Steel", "Wood", "Brick"]
 
@@ -224,7 +224,6 @@ class FinalQueryModel:
     p_recorded                       float   alias of database_reporting_probability
     p05, p50, p95                    float   conditional intensity quantiles (kg/m^2)
     mean                             float   conditional intensity mean (kg/m^2)
-    expected_reported                float   p_recorded * p50
     n_observed_train                 int     training rows with this material recorded
     coverage_warning                 bool    True if n_observed_train < LOW_OBS_THRESHOLD
     archetype_n_train                int     training rows matching the full input archetype
@@ -304,7 +303,7 @@ class FinalQueryModel:
         Returns
         -------
         dict: material -> {database_reporting_probability, p_recorded, p05, p50, p95, mean,
-                           expected_reported, n_observed_train, coverage_warning,
+                           n_observed_train, coverage_warning,
                            archetype_n_train, archetype_support_level}
         """
         p_recorded = self.tuned_observation_model.predict_proba(X_proc)
@@ -336,9 +335,10 @@ class FinalQueryModel:
             blend_w = np.clip(_eff_n / _scale, 0.0, 1.0) * self.BLEND_MAX_ALPHA
             arch_keys = keys.values
 
+            archetype_means = getattr(self, "archetype_means_", {})
             for m, mat in enumerate(y_cols):
                 arch_means_arr = np.array(
-                    [self.archetype_means_.get(k, {}).get(m, np.nan) for k in arch_keys],
+                    [archetype_means.get(k, {}).get(m, np.nan) for k in arch_keys],
                     dtype=np.float64,
                 )
                 valid = np.isfinite(arch_means_arr) & (blend_w > 0)
