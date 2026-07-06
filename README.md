@@ -2,6 +2,24 @@
 
 This folder contains the current model definition, training workflow, exported artifacts, and evaluation outputs for building material intensity prediction in kg/m².
 
+## Standardized Package Layout
+
+This folder is organized for a GitHub-ready model package with a single source of truth for development:
+
+- `prediction_model.ipynb`: primary development workflow.
+- `prediction_model.py`: script export of the notebook for reproducible runs.
+- `model_classes.py`: lightweight class definitions for model deserialization.
+- Runtime artifacts: `model_finalquery.joblib`, `preprocessor.joblib`, `model_info.json`.
+- Evaluation artifact: `evaluation_summary.csv`.
+- Data inputs: `Integrated_MI_database_add_Singapore.xlsx`, `Raw_db/`, `sources/`.
+
+Recommended workflow:
+
+1. Develop and validate in `prediction_model.ipynb`.
+2. Export/sync script to `prediction_model.py`.
+3. Regenerate artifacts and metrics from the same run.
+4. Commit notebook, script, and generated artifacts together.
+
 ## Model Definition
 
 The deployed model is a two-stage FinalQueryModel implemented in [prediction_model.py](prediction_model.py):
@@ -110,3 +128,17 @@ Important:
 - [preprocessor.joblib](preprocessor.joblib): fitted preprocessing pipeline.
 - [model_info.json](model_info.json): schema and split metadata.
 - [evaluation_summary.csv](evaluation_summary.csv): summary metrics.
+
+## Environment Setup
+
+Install dependencies from this folder:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run full training/export workflow:
+
+```bash
+python prediction_model.py
+```

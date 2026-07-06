@@ -24,6 +24,10 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 from scipy.stats import spearmanr
 
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data" / "processed"
+ARTIFACTS_DIR = BASE_DIR / "artifacts"
+
 SEED = 42
 MIN_OBSERVED_TARGETS = 2
 LOW_OBS_THRESHOLD = 30
@@ -110,7 +114,7 @@ plt.rcParams.update({
 
 
 def prepare_data(
-    file_path="Integrated_MI_database_add_Singapore.xlsx",
+    file_path=DATA_DIR / "Integrated_MI_database_add_Singapore.xlsx",
     test_size=0.30,
     val_size=0.50,
     min_observed_targets=MIN_OBSERVED_TARGETS,
@@ -1530,15 +1534,17 @@ FinalQueryModel.__module__  = "prediction_model"
 import json as _json
 
 # 1. Trained model
-joblib.dump(final_query_model, "model_finalquery.joblib")
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+joblib.dump(final_query_model, ARTIFACTS_DIR / "model_finalquery.joblib")
 print("Saved: model_finalquery.joblib")
 
 # 2. Preprocessor
-joblib.dump(data["preprocessor"], "preprocessor.joblib")
+joblib.dump(data["preprocessor"], ARTIFACTS_DIR / "preprocessor.joblib")
 print("Saved: preprocessor.joblib")
 
 # 3. Evaluation results
-summary_df.to_csv("evaluation_summary.csv", index=False)
+summary_df.to_csv(ARTIFACTS_DIR / "evaluation_summary.csv", index=False)
 print("Saved: evaluation_summary.csv")
 
 # 4. Model metadata
@@ -1555,7 +1561,7 @@ _model_info = {
         "n_test":  int(len(data["X_test_proc"])),
     },
 }
-with open("model_info.json", "w") as _f:
+with open(ARTIFACTS_DIR / "model_info.json", "w") as _f:
     _json.dump(_model_info, _f, indent=2)
 print("Saved: model_info.json")
 
