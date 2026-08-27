@@ -22,4 +22,7 @@ archetype_support_levels_*.xlsx
 # Raw verbatim source-publisher files (not redistributed; see LICENSE and
 # README License section -- only the processed/harmonised database is
 # released). Keep locally for provenance/reproducibility, do not commit.
+data/sources/sources/1. Processed_R.xlsx
+data/sources/sources/2. Processed_N.xlsx
+data/sources/sources/4. Processed_G.xlsx
 data/raw/
