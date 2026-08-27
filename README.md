@@ -22,7 +22,7 @@ This folder is organized for a GitHub-ready model package with a single source o
 - `model_classes.py`: lightweight class definitions for model deserialization.
 - Runtime artifacts: `model_finalquery.joblib`, `preprocessor.joblib`, `model_info.json`.
 - Evaluation artifact: `evaluation_summary.csv`.
-- Data inputs: `Integrated_MI_database_add_Singapore.xlsx`, `Raw_db/`, `sources/`.
+- Data inputs: `Integrated_MI_database_add_Singapore.xlsx`, `carbenmats_subset_GPL3.csv`, `data/sources/` (per-source harmonised extracts). Verbatim raw publisher files (`data/raw/`) are excluded from this repository (see License section) and kept locally only, for provenance.
 - Split manifest: `fixed_split_manifest.csv`, `build_fixed_split_manifest.py`.
 
 Recommended workflow:
