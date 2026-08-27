@@ -77,19 +77,27 @@ Archetype support is computed using:
 The Integrated_MI_database_add_Singapore.xlsx + carbenmats_subset_GPL3.csv dataset (see License section above) is harmonized from five source databases plus locally collected Singapore records.
 Source labels use R-n, N-n, B-n, G-n, and C-n, where n is the original record index in each source.
 
-### Record-level provenance for R-n and N-n
+### Record-level provenance
 
-Marinova et al. (R-n) and Liu et al. (N-n) are themselves compilations of individual
-case studies drawn from many separate primary publications; each row cites the true
-original source (paper title, authors, journal, DOI where available) in the source
-spreadsheet. To keep record-level traceability (per the `ID_marked` field, see the
-manuscript's Data and methods section) without redistributing Marinova's or Liu's own
-compiled data tables, `data/processed/provenance_crosswalk/` provides a citation-only
-crosswalk for these two sources: `ID_marked` mapped to the original case study's title
-and full citation only (no material-intensity values or other compiled data columns).
-Use these citations to locate the primary source for a given `R-n`/`N-n` record; the
-compiled tables underlying Marinova et al. and Liu et al. are not included in this
-repository (see License section).
+Per-source compiled extracts (`data/sources/`) are not included in this repository --
+only the harmonised database, the GPL-3.0 Röck subset, and a lightweight provenance
+crosswalk are released (see License section). To keep record-level traceability (per
+the `ID_marked` field, see the manuscript's Data and methods section) without
+redistributing the compiled source tables themselves,
+`data/processed/provenance_crosswalk/provenance_crosswalk_ALL.csv` maps every
+`ID_marked` to (a) the original source's DOI/access point so users can download it
+directly themselves, and (b) how to locate that specific record within it:
+
+- **B-n, C-n, G-n** (Heeren & Fishman; Yang, CBMICD1.0; Röck, CarbEnMats/GBDB -- all
+  openly licensed, CC BY 4.0 / GPL-3.0-only): `n` is the 0-indexed row/id in the
+  source's own publicly downloadable file at the given DOI.
+- **R-n, N-n** (Marinova et al., CC BY-NC-ND 4.0; Liu et al., no licence stated by
+  publisher): these two sources are themselves compilations of individual case studies
+  drawn from many separate primary publications, with no independent row-index of
+  their own; the crosswalk instead gives the original primary-literature citation
+  (title, authors, journal, DOI where available) for each record.
+- **S-n** (Singapore local records): primary data collected by the authors; see the
+  manuscript, Sect. 2.1.
 
 - R-n: Global construction materials database and stock analysis of residential buildings between 1970-2050
 	DOI: https://doi.org/10.1016/j.jclepro.2019.119146

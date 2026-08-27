@@ -19,7 +19,9 @@ __tmp_from_nb.py
 archetype_support_levels_*.xlsx
 *.sqlite3
 
-# Raw verbatim source-publisher files (not redistributed; see LICENSE and
-# README License section -- only the processed/harmonised database is
-# released). Keep locally for provenance/reproducibility, do not commit.
+# Raw verbatim / per-source compiled source-publisher files (not
+# redistributed; see LICENSE and README License section -- only the
+# processed/harmonised database and the citation-only provenance crosswalk
+# are released). Keep locally for provenance/reproducibility, do not commit.
 data/raw/
+data/sources/
