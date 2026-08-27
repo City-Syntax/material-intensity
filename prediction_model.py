@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[193]:
 
 
 import random
+import hashlib
 from pathlib import Path
 import joblib
 import numpy as np
@@ -19,16 +20,13 @@ from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_score, recall_score, f1_score,
     mean_absolute_error, mean_squared_error, r2_score
 )
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import KFold
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 from scipy.stats import spearmanr
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data" / "processed"
-ARTIFACTS_DIR = BASE_DIR / "artifacts"
-
 SEED = 42
+SPLIT_MANIFEST_PATH = Path("data/processed/fixed_split_manifest.csv")
 MIN_OBSERVED_TARGETS = 2
 LOW_OBS_THRESHOLD = 30
 IPS_MIN_PROBA = 0.05
@@ -105,7 +103,7 @@ plt.rcParams.update({
 })
 
 
-# In[169]:
+# In[ ]:
 
 
 # ==========================================================
@@ -114,17 +112,18 @@ plt.rcParams.update({
 
 
 def prepare_data(
-    file_path=DATA_DIR / "Integrated_MI_database_add_Singapore.xlsx",
-    test_size=0.30,
-    val_size=0.50,
+    file_path="data/processed/Integrated_MI_database_add_Singapore.xlsx",
+    split_manifest_path=SPLIT_MANIFEST_PATH,
     min_observed_targets=MIN_OBSERVED_TARGETS,
-    random_state=SEED,
 ):
     file_path = Path(file_path)
     if not file_path.is_absolute():
         file_path = Path.cwd() / file_path
 
     df = pd.read_excel(file_path)
+    df["ID_marked"] = df["ID_marked"].astype("string").str.strip()
+    if df["ID_marked"].isna().any() or df["ID_marked"].duplicated().any():
+        raise ValueError("ID_marked must be present and unique before applying the fixed split manifest.")
     df["Construction period"] = pd.to_numeric(df["Construction period"], errors="coerce")
     df["Construction period bucket"] = to_period_bucket(df["Construction period"])
     df = df.dropna(subset=X_cols).reset_index(drop=True)
@@ -132,19 +131,51 @@ def prepare_data(
     target_mask_df = df[y_cols].notna()
     df = df.loc[target_mask_df.sum(axis=1) >= min_observed_targets].reset_index(drop=True)
 
-    X = df[X_cols].copy()
-    y_raw_df = df[y_cols].copy()
-    y_mask = y_raw_df.notna().to_numpy(dtype=bool)
+    split_manifest_path = Path(split_manifest_path)
+    if not split_manifest_path.is_absolute():
+        split_manifest_path = Path.cwd() / split_manifest_path
+    if not split_manifest_path.exists():
+        raise FileNotFoundError(
+            f"Fixed split manifest not found: {split_manifest_path}. "
+            "Run `python build_fixed_split_manifest.py` first."
+        )
+    manifest = pd.read_csv(split_manifest_path, dtype={"ID_marked": "string"})
+    required_manifest_cols = {"ID_marked", "split_group_id", "split"}
+    missing_manifest_cols = required_manifest_cols.difference(manifest.columns)
+    if missing_manifest_cols:
+        raise ValueError(f"Split manifest is missing columns: {sorted(missing_manifest_cols)}")
+    if manifest["ID_marked"].duplicated().any():
+        raise ValueError("Split manifest contains duplicate ID_marked values.")
 
-    X_train, X_temp, y_train_df, y_temp_df, y_train_mask, y_temp_mask = train_test_split(
-        X, y_raw_df, y_mask, test_size=test_size, random_state=random_state
-    )
-    X_val, X_test, y_val_df, y_test_df, y_val_mask, y_test_mask = train_test_split(
-        X_temp, y_temp_df, y_temp_mask, test_size=val_size, random_state=random_state
-    )
+    split_by_id = manifest.set_index("ID_marked")["split"]
+    df["_split"] = df["ID_marked"].map(split_by_id)
+    missing_ids = df.loc[df["_split"].isna(), "ID_marked"].tolist()
+    if missing_ids:
+        raise ValueError(
+            f"Fixed split manifest is missing {len(missing_ids)} current model IDs "
+            f"(examples: {missing_ids[:10]}). Run `python build_fixed_split_manifest.py` "
+            "to add new records without changing the benchmark."
+        )
+    invalid_splits = set(df["_split"]) - {"train", "val", "test"}
+    if invalid_splits:
+        raise ValueError(f"Invalid split labels in manifest: {sorted(invalid_splits)}")
 
-    for df_ in [X_train, X_val, X_test, y_train_df, y_val_df, y_test_df]:
-        df_.reset_index(drop=True, inplace=True)
+    current_groups = manifest.loc[manifest["ID_marked"].isin(df["ID_marked"])]
+    crossed_groups = current_groups.groupby("split_group_id")["split"].nunique()
+    if (crossed_groups > 1).any():
+        raise ValueError("Split manifest places at least one split group in multiple splits.")
+
+    def _take(split_name):
+        part = df.loc[df["_split"] == split_name]
+        X_part = part[X_cols].copy().reset_index(drop=True)
+        y_part = part[y_cols].copy().reset_index(drop=True)
+        mask_part = y_part.notna().to_numpy(dtype=bool)
+        ids_part = part["ID_marked"].astype(str).reset_index(drop=True)
+        return X_part, y_part, mask_part, ids_part
+
+    X_train, y_train_df, y_train_mask, train_ids = _take("train")
+    X_val, y_val_df, y_val_mask, val_ids = _take("val")
+    X_test, y_test_df, y_test_mask, test_ids = _take("test")
 
     y_train_raw = y_train_df.to_numpy(dtype=np.float64).copy()
     y_val_raw   = y_val_df.to_numpy(dtype=np.float64).copy()
@@ -173,9 +204,12 @@ def prepare_data(
         X_train_raw=X_train,       X_val_raw=X_val,        X_test_raw=X_test,
         y_train_raw=y_train_raw,   y_val_raw=y_val_raw,    y_test_raw=y_test_raw,
         y_train_mask=y_train_mask, y_val_mask=y_val_mask,  y_test_mask=y_test_mask,
+        train_ids=train_ids, val_ids=val_ids, test_ids=test_ids,
         preprocessor=preprocessor,
         kept_rows=len(df),
         min_observed_targets=min_observed_targets,
+        split_manifest_path=split_manifest_path,
+        split_manifest_sha256=hashlib.sha256(split_manifest_path.read_bytes()).hexdigest(),
     )
 
 
@@ -1533,18 +1567,19 @@ FinalQueryModel.__module__  = "prediction_model"
 
 import json as _json
 
-# 1. Trained model
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+ART_DIR = _pl.Path("artifacts")
+ART_DIR.mkdir(parents=True, exist_ok=True)
 
-joblib.dump(final_query_model, ARTIFACTS_DIR / "model_finalquery.joblib")
+# 1. Trained model
+joblib.dump(final_query_model, ART_DIR / "model_finalquery.joblib")
 print("Saved: model_finalquery.joblib")
 
 # 2. Preprocessor
-joblib.dump(data["preprocessor"], ARTIFACTS_DIR / "preprocessor.joblib")
+joblib.dump(data["preprocessor"], ART_DIR / "preprocessor.joblib")
 print("Saved: preprocessor.joblib")
 
 # 3. Evaluation results
-summary_df.to_csv(ARTIFACTS_DIR / "evaluation_summary.csv", index=False)
+summary_df.to_csv(ART_DIR / "evaluation_summary.csv", index=False)
 print("Saved: evaluation_summary.csv")
 
 # 4. Model metadata
@@ -1560,8 +1595,13 @@ _model_info = {
         "n_val":   int(len(data["X_val_proc"])),
         "n_test":  int(len(data["X_test_proc"])),
     },
+    "split_strategy": {
+        "type": "fixed_id_manifest",
+        "manifest": str(data["split_manifest_path"]),
+        "sha256": data["split_manifest_sha256"],
+    },
 }
-with open(ARTIFACTS_DIR / "model_info.json", "w") as _f:
+with open(ART_DIR / "model_info.json", "w") as _f:
     _json.dump(_model_info, _f, indent=2)
 print("Saved: model_info.json")
 

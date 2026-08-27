@@ -31,7 +31,7 @@ sys.modules.setdefault("prediction_model", _pm)
 
 # ── paths ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
-FIG_DIR    = SCRIPT_DIR.parent / "Nature_Scientific-Data_MI-database" / "figures"
+FIG_DIR    = SCRIPT_DIR.parent / "ESSD_MI-database" / "figures"
 DATA_FILE  = SCRIPT_DIR / "data" / "processed" / "Integrated_MI_database_add_Singapore.xlsx"
 ARTIFACT_DIR = SCRIPT_DIR / "artifacts"
 FIG_DIR.mkdir(parents=True, exist_ok=True)

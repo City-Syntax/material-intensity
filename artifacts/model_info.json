@@ -24,15 +24,20 @@
   "SEED": 42,
   "LOW_OBS_THRESHOLD": 30,
   "n_observed_train": {
-    "Concrete": 1385,
-    "Glass": 886,
-    "Steel": 1638,
-    "Wood": 1452,
-    "Brick": 1200
+    "Concrete": 1450,
+    "Glass": 920,
+    "Steel": 1674,
+    "Wood": 1530,
+    "Brick": 1259
   },
   "data_split": {
-    "n_train": 1799,
-    "n_val": 385,
-    "n_test": 386
+    "n_train": 1848,
+    "n_val": 396,
+    "n_test": 396
+  },
+  "split_strategy": {
+    "type": "fixed_id_manifest",
+    "manifest": "data\\processed\\fixed_split_manifest.csv",
+    "sha256": "50522d503d8c1908c785adf9348b12fa4f8cc4872e3203dfe3b0ab4e181bbc8f"
   }
 }
