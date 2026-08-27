@@ -1,0 +1,43 @@
+{
+  "X_cols": [
+    "Construction period",
+    "Construction period bucket",
+    "Typology",
+    "Primary Code",
+    "Hybrid Structure",
+    "Country",
+    "Geo_macro"
+  ],
+  "archetype_cols": [
+    "Construction period bucket",
+    "Typology",
+    "Primary Code",
+    "Country"
+  ],
+  "y_cols": [
+    "Concrete",
+    "Glass",
+    "Steel",
+    "Wood",
+    "Brick"
+  ],
+  "SEED": 42,
+  "LOW_OBS_THRESHOLD": 30,
+  "n_observed_train": {
+    "Concrete": 1450,
+    "Glass": 920,
+    "Steel": 1674,
+    "Wood": 1530,
+    "Brick": 1259
+  },
+  "data_split": {
+    "n_train": 1848,
+    "n_val": 396,
+    "n_test": 396
+  },
+  "split_strategy": {
+    "type": "fixed_id_manifest",
+    "manifest": "data\\processed\\fixed_split_manifest.csv",
+    "sha256": "50522d503d8c1908c785adf9348b12fa4f8cc4872e3203dfe3b0ab4e181bbc8f"
+  }
+}

@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter cache
+.ipynb_checkpoints/
+
+# Local environment files
+.env
+.venv/
+venv/
+
+# Temporary exports and local debug artifacts
+__tmp_from_nb.py
+*.log
+*.tmp
+
+# Optional local analysis outputs (not required for model package)
+archetype_support_levels_*.xlsx
+*.sqlite3
