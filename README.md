@@ -2,6 +2,17 @@
 
 This folder contains the current model definition, training workflow, exported artifacts, and evaluation outputs for building material intensity prediction in kg/m².
 
+## License
+
+This repository is released under a **dual licence**, split by file, reflecting the licence terms of the underlying sources (see the paper, Sect. 2.1 and Table 1 for the full per-source breakdown):
+
+| File(s) | License |
+|---|---|
+| `data/processed/Integrated_MI_database_add_Singapore.xlsx` (2,739 records), model code, notebooks, artifacts | [CC BY 4.0](LICENSE) |
+| `data/processed/carbenmats_subset_GPL3.csv` (51 records sourced from Röck et al.'s CarbEnMats/GBDB, `ID_marked` prefix `G-`) | [GPL-3.0](LICENSE-GPL-3.0-carbenmats-subset.txt), see [NOTICE](NOTICE-carbenmats-subset.txt) |
+
+The two database files are distributed as separate, independent files (not merged) precisely so the GPL-3.0 terms apply only to the Röck-sourced subset; together they reproduce the full 2,790-record harmonised database described in the paper. Values from Marinova et al. (CC BY-NC-ND 4.0) and Liu et al. (no publisher licence stated) were extracted and re-tabulated as reported facts under this project's own classification schema, not reused under either source's licence terms.
+
 ## Standardized Package Layout
 
 This folder is organized for a GitHub-ready model package with a single source of truth for development:
@@ -63,19 +74,25 @@ Archetype support is computed using:
 
 ## Integrated MI Database Sources (DOI)
 
-The Integrated_MI_database_add_Singapore.xlsx dataset is harmonized from five source databases.
+The Integrated_MI_database_add_Singapore.xlsx + carbenmats_subset_GPL3.csv dataset (see License section above) is harmonized from five source databases plus locally collected Singapore records.
 Source labels use R-n, N-n, B-n, G-n, and C-n, where n is the original record index in each source.
 
 - R-n: Global construction materials database and stock analysis of residential buildings between 1970-2050
 	DOI: https://doi.org/10.1016/j.jclepro.2019.119146
+	License: CC BY-NC-ND 4.0 (values used here are extracted facts, re-tabulated under this project's own schema, not reused under this license's terms — see License section above)
 - N-n: Spatiotemporal Characteristics of Global Building Material Intensity Revealed for Circular and Low-Carbon Construction
 	DOI: https://doi.org/10.1021/acs.est.5c05684
+	License: not stated by publisher (closed-access article; values used here are extracted facts, re-tabulated under this project's own schema)
 - B-n: A database seed for a community-driven material intensity research platform
 	DOI: https://doi.org/10.1038/s41597-019-0021-x
+	License: CC BY 4.0
 - G-n: Global Buildings Database Seed on Whole Life Carbon Emissions, Energy Performance, and Material Intensity (GBDB CarbEnMats)
 	DOI: https://doi.org/10.21203/rs.3.rs-3373442/v1
+	License: GPL-3.0 — distributed separately as data/processed/carbenmats_subset_GPL3.csv, see License section above
 - C-n: CBMICD1.0: China's building material intensity coefficient dataset (1949-2015)
 	DOI: https://doi.org/10.1016/j.resconrec.2020.104824
+	License: CC BY 4.0
+- S-n: Singapore local records, compiled directly by the authors. Material quantities for BIM-derived Singapore records were computed with an automated low-LOD BIM material-assessment tool (Pei, W., Wang, X., Yuan, P. F., and Stouffs, R.: From lifecycle material tracking to urban-scale material stock modeling, Resources, Conservation and Recycling, 226, 108659, 2026, https://doi.org/10.1016/j.resconrec.2025.108659).
 
 Data integration includes schema alignment (feature names and units), category normalization, and source-ID tracking for provenance.
 

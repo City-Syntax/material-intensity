@@ -1,0 +1,34 @@
+carbenmats_subset_GPL3.csv (51 records, ID_marked prefix "G-")
+
+This file is a MODIFIED VERSION of a subset of the CarbEnMats / GBDB
+("Global Buildings Database Seed on Whole Life Carbon Emissions, Energy
+Performance, and Material Intensity") dataset by Martin Röck, Andreas
+Sørensen, Maria Balouktsi, and colleagues:
+
+  Röck, M. et al.: A Global Database on Whole Life Carbon, Energy and
+  Material Intensity of Buildings (CarbEnMats-Buildings), 2023.
+  Preprint: https://doi.org/10.21203/rs.3.rs-3373442/v1
+  Source repository: https://github.com/mroeck/carbenmats-buildings
+  (GNU General Public License v3.0)
+
+Modifications made by Wanyu Pei and Yu Qian Ang (National University of
+Singapore), completed 2026: 51 records were selected from the original
+CarbEnMats/GBDB release (those passing this study's attribute-completeness
+and target-material filters, described in the accompanying paper, Sect. 2.3),
+and the following fields were relabelled/recoded into this study's
+harmonised schema: building function/typology, structural system code,
+country, construction period, and the five target material-intensity
+columns (concrete, steel, wood, brick, glass). No material-intensity values
+were altered; only field names, categorical codes, and units were
+harmonised. The original, unmodified CarbEnMats/GBDB dataset remains
+available at the source repository above ("Corresponding Source" per
+GPL-3.0 Sect. 1).
+
+License: GNU General Public License v3.0 (GPL-3.0), same as the source.
+Full license text: see LICENSE_carbenmats_subset_GPL-3.0.txt in this
+directory, or https://www.gnu.org/licenses/gpl-3.0.html
+
+This file is distributed separately from, and is not merged into,
+Integrated_MI_database_add_Singapore.xlsx (CC BY 4.0; see
+LICENSE_main_CC-BY-4.0.txt), consistent with GPL-3.0 Sect. 5's aggregation
+provision for separate and independent works.

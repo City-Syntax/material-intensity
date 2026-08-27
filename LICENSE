@@ -1,0 +1,25 @@
+Integrated_MI_database_add_Singapore.xlsx (2,739 records)
+model_finalquery.joblib, preprocessor.joblib, model_info.json
+Material_Intensity_Predictor.py, prediction_model.py, model_classes.py
+
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+Copyright (c) 2026 Wanyu Pei and Yu Qian Ang.
+
+You are free to share (copy and redistribute the material in any medium or
+format) and adapt (remix, transform, and build upon the material) for any
+purpose, even commercially, provided you give appropriate credit, provide a
+link to the license, and indicate if changes were made. See the paper for
+citation details:
+
+Pei, W. and Ang, Y. Q.: A Harmonised Building Material Intensity Database for
+Uncertainty-Aware Building Stock Analysis, Earth System Science Data (in
+review/press).
+
+This file does NOT cover carbenmats_subset_GPL3.csv, which is separately
+licensed under GPL-3.0 (see LICENSE_carbenmats_subset_GPL-3.0.txt) because it
+is sourced from Röck et al.'s GPL-3.0-licensed CarbEnMats/GBDB dataset
+(https://github.com/mroeck/carbenmats-buildings). The two files are
+distributed together as independent, separately licensed components of the
+released database and are not merged into a single work.
