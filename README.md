@@ -77,6 +77,20 @@ Archetype support is computed using:
 The Integrated_MI_database_add_Singapore.xlsx + carbenmats_subset_GPL3.csv dataset (see License section above) is harmonized from five source databases plus locally collected Singapore records.
 Source labels use R-n, N-n, B-n, G-n, and C-n, where n is the original record index in each source.
 
+### Record-level provenance for R-n and N-n
+
+Marinova et al. (R-n) and Liu et al. (N-n) are themselves compilations of individual
+case studies drawn from many separate primary publications; each row cites the true
+original source (paper title, authors, journal, DOI where available) in the source
+spreadsheet. To keep record-level traceability (per the `ID_marked` field, see the
+manuscript's Data and methods section) without redistributing Marinova's or Liu's own
+compiled data tables, `data/processed/provenance_crosswalk/` provides a citation-only
+crosswalk for these two sources: `ID_marked` mapped to the original case study's title
+and full citation only (no material-intensity values or other compiled data columns).
+Use these citations to locate the primary source for a given `R-n`/`N-n` record; the
+compiled tables underlying Marinova et al. and Liu et al. are not included in this
+repository (see License section).
+
 - R-n: Global construction materials database and stock analysis of residential buildings between 1970-2050
 	DOI: https://doi.org/10.1016/j.jclepro.2019.119146
 	License: CC BY-NC-ND 4.0 (values used here are extracted facts, re-tabulated under this project's own schema, not reused under this license's terms — see License section above)
