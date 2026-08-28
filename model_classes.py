@@ -310,6 +310,20 @@ class FinalQueryModel:
         intervals  = self.tuned_intensity_model.predict_quantiles(X_proc)
         means_dict = self.tuned_intensity_model.predict_means(X_proc)
 
+        # Apply the per-material conformal calibration offset (delta_m), if
+        # one has been fitted (see recalibrate_offsets.py / prediction_model.py,
+        # Stage 2 evaluation). p05 is floored at 0 (intensities are
+        # non-negative); this floor cannot change empirical coverage, since
+        # any offset large enough to drive p05 - delta_m negative already
+        # includes every non-negative observation.
+        offsets = getattr(self, "validation_offsets_", None)
+        if offsets:
+            for mat in y_cols:
+                delta = offsets.get(mat, 0.0)
+                if delta:
+                    intervals[mat]["p05"] = np.maximum(intervals[mat]["p05"] - delta, 0.0)
+                    intervals[mat]["p95"] = intervals[mat]["p95"] + delta
+
         n = X_proc.shape[0]
         if X_raw is None or not getattr(self, "archetype_count_map_", None):
             archetype_n   = np.full(n, np.nan)
