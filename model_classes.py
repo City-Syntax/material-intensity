@@ -7,7 +7,6 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 
 SEED = 42
-LOW_OBS_THRESHOLD = 30
 IPS_MIN_PROBA = 0.05
 IPS_MAX_WEIGHT = 20.0
 ARCHETYPE_HIGH_SUPPORT = 20
@@ -225,7 +224,6 @@ class FinalQueryModel:
     p05, p50, p95                    float   conditional intensity quantiles (kg/m^2)
     mean                             float   conditional intensity mean (kg/m^2)
     n_observed_train                 int     training rows with this material recorded
-    coverage_warning                 bool    True if n_observed_train < LOW_OBS_THRESHOLD
     archetype_n_train                int     training rows matching the full input archetype
     archetype_support_level          str     qualitative support label from archetype_n_train
     """
@@ -303,7 +301,7 @@ class FinalQueryModel:
         Returns
         -------
         dict: material -> {database_reporting_probability, p_recorded, p05, p50, p95, mean,
-                           n_observed_train, coverage_warning,
+                           n_observed_train,
                            archetype_n_train, archetype_support_level}
         """
         p_recorded = self.tuned_observation_model.predict_proba(X_proc)
@@ -379,7 +377,6 @@ class FinalQueryModel:
                 "mean":                            means_dict[mat],
                 "expected_reported":               p_recorded[:, m] * intervals[mat]["p50"],
                 "n_observed_train":                n_obs,
-                "coverage_warning":                n_obs < LOW_OBS_THRESHOLD,
                 "archetype_n_train":               archetype_n,
                 "archetype_support_level":         archetype_lvl,
             }
