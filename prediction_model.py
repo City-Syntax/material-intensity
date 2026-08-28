@@ -620,7 +620,6 @@ class FinalQueryModel:
     mean                             float   conditional intensity mean (kg/m^2)
     expected_reported                float   p_recorded * p50
     n_observed_train                 int     training rows with this material recorded
-    coverage_warning                 bool    True if n_observed_train < LOW_OBS_THRESHOLD
     archetype_n_train                int     training rows matching the full input archetype
     archetype_support_level          str     qualitative support label from archetype_n_train
     """
@@ -680,7 +679,7 @@ class FinalQueryModel:
         Returns
         -------
         dict: material -> {database_reporting_probability, p_recorded, p05, p50, p95,
-                           mean, expected_reported, n_observed_train, coverage_warning,
+                           mean, expected_reported, n_observed_train,
                            archetype_n_train, archetype_support_level}
         """
         p_recorded = self.tuned_observation_model.predict_proba(X_proc)
@@ -715,7 +714,6 @@ class FinalQueryModel:
                 "mean":                            means_dict[mat],
                 "expected_reported":               p_recorded[:, m] * intervals[mat]["p50"],
                 "n_observed_train":                n_obs,
-                "coverage_warning":                n_obs < LOW_OBS_THRESHOLD,
                 "archetype_n_train":               archetype_n,
                 "archetype_support_level":         archetype_lvl,
             }
