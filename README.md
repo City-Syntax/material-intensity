@@ -2,6 +2,14 @@
 
 This folder contains the current model definition, training workflow, exported artifacts, and evaluation outputs for building material intensity prediction in kg/m².
 
+## Citation
+
+Pei, W. and Ang, Y. Q.: A Harmonised Building Material Intensity Database for
+Uncertainty-Aware Building Stock Analysis, Earth System Science Data (in review).
+
+The archived release (data + model artefacts) is available on Zenodo:
+https://doi.org/10.5281/zenodo.22123252
+
 ## License
 
 This repository is released under a **dual licence**, split by file, reflecting the licence terms of the underlying sources (see the paper, Sect. 2.1 and Table 1 for the full per-source breakdown):
@@ -22,7 +30,7 @@ This folder is organized for a GitHub-ready model package with a single source o
 - `model_classes.py`: lightweight class definitions for model deserialization.
 - Runtime artifacts: `model_finalquery.joblib`, `preprocessor.joblib`, `model_info.json`.
 - Evaluation artifact: `evaluation_summary.csv`.
-- Data inputs: `Integrated_MI_database_add_Singapore.xlsx`, `carbenmats_subset_GPL3.csv`, `data/sources/` (per-source harmonised extracts). Verbatim raw publisher files (`data/raw/`) are excluded from this repository (see License section) and kept locally only, for provenance.
+- Data inputs: `data/processed/Integrated_MI_database_add_Singapore.xlsx`, `data/processed/carbenmats_subset_GPL3.csv`, `data/processed/provenance_crosswalk/` (citation-only record-level provenance, see below). Per-source compiled extracts (`data/sources/`) and verbatim raw publisher files (`data/raw/`) are excluded from this repository (see License section) and kept locally only, for provenance.
 - Split manifest: `fixed_split_manifest.csv`, `build_fixed_split_manifest.py`.
 
 Recommended workflow:
@@ -50,7 +58,7 @@ Quantile outputs are p05, p50, and p95.
 
 ## Input and Targets
 
-Features (X_cols) from [model_info.json](model_info.json):
+Features (X_cols) from [model_info.json](artifacts/model_info.json):
 - Construction period
 - Construction period bucket
 - Typology
@@ -129,7 +137,7 @@ Run `python build_fixed_split_manifest.py` after adding new records to extend
 the manifest without disturbing the existing benchmark. `prediction_model.py`
 reads this manifest and will raise an error if it is missing or out of date.
 
-From [model_info.json](model_info.json):
+From [model_info.json](artifacts/model_info.json):
 
 | Split | Rows |
 |---|---:|
@@ -149,7 +157,7 @@ Observed training rows per material:
 
 ## Current Evaluation Results
 
-From [evaluation_summary.csv](evaluation_summary.csv), on the single fixed test split above:
+From [evaluation_summary.csv](artifacts/evaluation_summary.csv), on the single fixed test split above:
 
 | Material | AUC | MAE | RMSE | R2 | CovU | CovC |
 |---|---:|---:|---:|---:|---:|---:|
@@ -185,10 +193,10 @@ Important:
 
 - [prediction_model.ipynb](prediction_model.ipynb): notebook workflow.
 - [prediction_model.py](prediction_model.py): script workflow and model class definitions.
-- [model_finalquery.joblib](model_finalquery.joblib): trained FinalQueryModel artifact.
-- [preprocessor.joblib](preprocessor.joblib): fitted preprocessing pipeline.
-- [model_info.json](model_info.json): schema and split metadata.
-- [evaluation_summary.csv](evaluation_summary.csv): summary metrics.
+- [model_finalquery.joblib](artifacts/model_finalquery.joblib): trained FinalQueryModel artifact.
+- [preprocessor.joblib](artifacts/preprocessor.joblib): fitted preprocessing pipeline.
+- [model_info.json](artifacts/model_info.json): schema and split metadata.
+- [evaluation_summary.csv](artifacts/evaluation_summary.csv): summary metrics.
 
 ## Environment Setup
 
