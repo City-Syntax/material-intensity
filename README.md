@@ -8,7 +8,8 @@ Pei, W. and Ang, Y. Q.: A Harmonised Building Material Intensity Database for
 Uncertainty-Aware Building Stock Analysis, Earth System Science Data (in review).
 
 The archived release (data + model artefacts) is available on Zenodo:
-https://doi.org/10.5281/zenodo.22123252
+https://doi.org/10.5281/zenodo.22137810 (this version; the concept DOI
+https://doi.org/10.5281/zenodo.22125059 always resolves to the latest version).
 
 ## License
 
