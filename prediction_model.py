@@ -1548,22 +1548,25 @@ else:
         _py_path.write_text(_raw.decode('utf-16-le'), encoding='utf-8')
         print("Re-encoded prediction_model.py: UTF-16 LE -> UTF-8")
 
-# Step 0b: Register classes in sys.modules["prediction_model"] WITHOUT importing
-# the module file (which would re-execute the entire training pipeline).
-# This makes pickle/joblib able to resolve class definitions when the model
-# is loaded in a fresh process (e.g. Streamlit).
-if "prediction_model" not in _sys.modules:
-    _pm = _types.ModuleType("prediction_model")
-    _sys.modules["prediction_model"] = _pm
-else:
-    _pm = _sys.modules["prediction_model"]
+# Step 0b: Point the trained objects' classes at the lightweight
+# model_classes.py module (not this training script) before pickling, so
+# joblib.load() works in a fresh process without re-running data prep /
+# Optuna tuning. A bare "import prediction_model" would re-execute this
+# whole file (it has no __main__ guard) and fail outside a from-scratch
+# training run. model_classes.py must be kept in sync with the
+# ObservationModel / IntensityModel / FinalQueryModel definitions above
+# (inference-time methods only -- predict_proba/predict_quantiles/
+# predict_means/query -- since fit() is never called on a deserialized
+# model).
+ObservationModel.__module__ = "model_classes"
+IntensityModel.__module__   = "model_classes"
+FinalQueryModel.__module__  = "model_classes"
 
-_pm.ObservationModel = ObservationModel
-_pm.IntensityModel   = IntensityModel
-_pm.FinalQueryModel  = FinalQueryModel
-ObservationModel.__module__ = "prediction_model"
-IntensityModel.__module__   = "prediction_model"
-FinalQueryModel.__module__  = "prediction_model"
+# Persist the per-material conformal calibration offset (delta_m, computed
+# above from the validation split) onto the fitted model so query() can
+# apply it directly, instead of shipping an uncalibrated model that
+# requires users to re-derive and apply delta_m themselves.
+final_query_model.validation_offsets_ = validation_offsets
 
 import json as _json
 
@@ -1590,6 +1593,12 @@ _model_info = {
     "SEED":                SEED,
     "LOW_OBS_THRESHOLD":   LOW_OBS_THRESHOLD,
     "n_observed_train":    final_query_model.n_observed_train_,
+    "validation_offsets_delta_m": validation_offsets,
+    "calibration_note": (
+        "delta_m computed on the validation split via split-conformal "
+        "calibration (nominal 90% target, CAL_ALPHA=0.10); query() returns "
+        "[max(p05 - delta_m, 0), p95 + delta_m] as the calibrated interval."
+    ),
     "data_split": {
         "n_train": int(len(data["X_train_proc"])),
         "n_val":   int(len(data["X_val_proc"])),

@@ -188,7 +188,8 @@ The training/export section in [prediction_model.py](prediction_model.py) writes
 
 Important:
 - The exported model artifact is model_finalquery.joblib.
-- query() in FinalQueryModel returns raw Stage 2 quantiles; conformal offsets are computed in evaluation code and are not embedded in model_info.json.
+- query() in FinalQueryModel returns calibrated quantiles: the per-material conformal offset delta_m (estimated on the validation split; see `validation_offsets_delta_m` in model_info.json) is applied as `[max(p05 - delta_m, 0), p95 + delta_m]`. Run `python recalibrate_offsets.py` after retraining or updating the database to refresh delta_m without re-fitting Stage 1/Stage 2.
+- Deserialization uses [model_classes.py](model_classes.py), a lightweight mirror of the inference-time methods (`predict_proba`, `predict_quantiles`, `predict_means`, `query`) in prediction_model.py's `ObservationModel`/`IntensityModel`/`FinalQueryModel`. `joblib.load("model_finalquery.joblib")` works in a fresh process because the exported model's classes are re-pointed at `model_classes` before pickling (`prediction_model.py` has no `__main__` guard, so importing it directly to resolve classes would re-run the full data-prep/tuning pipeline). If you edit the class definitions in `prediction_model.py`, keep model_classes.py's inference-time methods in sync.
 
 ## Main Files In This Folder
 

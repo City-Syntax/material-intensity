@@ -39,5 +39,13 @@
     "type": "fixed_id_manifest",
     "manifest": "data\\processed\\fixed_split_manifest.csv",
     "sha256": "50522d503d8c1908c785adf9348b12fa4f8cc4872e3203dfe3b0ab4e181bbc8f"
-  }
+  },
+  "validation_offsets_delta_m": {
+    "Concrete": 135.13589534053096,
+    "Glass": 0.3250150680541992,
+    "Steel": 4.027316957666016,
+    "Wood": 7.002561141967774,
+    "Brick": 35.63043212890625
+  },
+  "calibration_note": "delta_m computed on the validation split via split-conformal calibration (nominal 90% target, CAL_ALPHA=0.10); query() returns [max(p05 - delta_m, 0), p95 + delta_m] as the calibrated interval."
 }
