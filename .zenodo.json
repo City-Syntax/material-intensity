@@ -1,0 +1,27 @@
+{
+  "title": "A Harmonised Building Material Intensity Database for Uncertainty-Aware Building Stock Analysis",
+  "description": "<p>This release contains the harmonised global building material intensity (MI) database and companion probabilistic query-model artefacts described in the associated manuscript (Pei &amp; Ang, Earth System Science Data, in review). It includes the integrated MI dataset (2,790 records spanning 32 countries), trained model artefacts, preprocessing pipeline, the deterministic train/validation/test split manifest, a record-level provenance crosswalk, and source code for inference and reproducible reuse.</p><p>The database is released as two separately licensed files within this archive: <code>data/processed/Integrated_MI_database_add_Singapore.xlsx</code> (2,739 records) and <code>data/processed/carbenmats_subset_GPL3.csv</code> (51 records sourced from Röck et al.'s CarbEnMats/GBDB dataset). This deposit's Zenodo license field is set to GPL-3.0-only (the more restrictive of the two, and therefore compliant for both files); the main database file is in fact released under CC BY 4.0 — see <code>LICENSE</code> (CC BY 4.0), <code>LICENSE-GPL-3.0-carbenmats-subset.txt</code>, and <code>NOTICE-carbenmats-subset.txt</code> in the archive for the exact per-file terms. Verbatim raw source-publisher files are not redistributed; a citation-only provenance crosswalk (<code>data/processed/provenance_crosswalk/</code>) preserves record-level traceability to all five source datasets without redistributing their compiled tables.</p>",
+  "creators": [
+    {
+      "name": "Pei, Wanyu",
+      "affiliation": "National University of Singapore"
+    },
+    {
+      "name": "Ang, Yu Qian",
+      "affiliation": "National University of Singapore"
+    }
+  ],
+  "license": "GPL-3.0-only",
+  "upload_type": "dataset",
+  "access_right": "open",
+  "keywords": [
+    "Building material intensity",
+    "Material flow analysis",
+    "Urban material stock",
+    "Probabilistic modelling",
+    "Harmonised database",
+    "Circular economy",
+    "Embodied carbon"
+  ],
+  "notes": "See README.md for the per-file licence breakdown and data dictionary."
+}
