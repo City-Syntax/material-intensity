@@ -1,0 +1,21 @@
+[project]
+name = "material-intensity"
+version = "0.1.0"
+description = "Material intensity for urban built environments: probabilistic query model, training workflow, and evaluation."
+requires-python = ">=3.14"
+dependencies = [
+    "numpy==2.5.2",
+    "pandas==3.0.5",
+    "scipy==1.18.1",
+    "scikit-learn==1.9.0",
+    "xgboost==3.4.1",
+    "optuna==4.9.0",
+    "matplotlib==3.11.1",
+    "joblib==1.5.3",
+    "openpyxl==3.1.5",
+    "jupyter==1.1.1",
+    "nbconvert==7.17.1",
+]
+
+[tool.uv]
+package = false

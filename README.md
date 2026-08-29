@@ -208,6 +208,14 @@ Install dependencies from this folder:
 pip install -r requirements.txt
 ```
 
+For an exact, reproducible environment (pinned versions used to produce the
+current `artifacts/`), use [uv](https://docs.astral.sh/uv/) with the
+`pyproject.toml` / `uv.lock` in this folder instead:
+
+```bash
+uv sync
+```
+
 Run full training/export workflow:
 
 ```bash
